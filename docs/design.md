@@ -29,13 +29,13 @@ A number in a circle (SF Symbol) = running jobs, plus `+N` for jobs waiting in t
 ## Menu
 
 ```
-gimlet-1 · small · s21n34 · 9h12m left · 🔌 connected
+gimlet-1 · shot · s21n34 · 9h12m left · 🔌 connected
    ├ Open VS Code
    └ Stop job
-gimlet-2 · large · waiting (queue)
+gimlet-2 · pitcher · waiting (queue)
    └ Cancel
 ───
-Start new job ▸  small / medium / large
+Start new job ▸  shot / double / pitcher
 Settings…
 Log in to GenomeDK        (only when the connection is down)
 ```
@@ -50,7 +50,7 @@ Log in to GenomeDK        (only when the connection is down)
 | GenomeDK username | — (asked at install) |
 | Slurm account | — (asked at install; e.g. `MomaDiagnosticsHg38`) |
 | Partition | none |
-| Presets | small 2 CPU / 4G, medium 4 / 8G, large 8 / 16G |
+| Presets | shot 2 CPU / 4G, double 4 / 8G, pitcher 8 / 16G |
 | Time limit | `12:00:00` (all presets) |
 | Idle minutes before auto-stop | 60 |
 
@@ -89,7 +89,8 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 
 ## Implementation choices
 
-- Watchdog: counts user-owned `sshd: user@…` / `sshd-session: user@…` processes on the node once a minute, and reports `<preset> connected` / `<preset> idle N` in its own job comment (`scontrol update`, only when it changes). The menu reads it with `squeue`, so nothing is stored on GenomeDK. Job output goes to `/dev/null`.
-- The menu refreshes every 15 s (plugin file `gimlet.15s.sh`).
+- Watchdog: counts user-owned `sshd: user@…` / `sshd-session: user@…` processes on the node once a minute, and writes `connected` / `idle N` to `~/.gimlet/<jobid>` on GenomeDK (only when it changes; the file is removed when the job ends). The menu reads these files in the same ssh call as `squeue` and removes any left by jobs that are gone. Status needs no Slurm calls. Job output goes to `/dev/null`.
+- The menu refreshes every 2 minutes (plugin file `gimlet.2m.sh`). Waiting for a new job to start asks Slurm nothing: `gimlet start` creates the job's status file empty right after `sbatch`, and a background ssh command reads it every 5 s (for up to an hour) until the job's first write, then redraws the menu. The file must exist beforehand: the login node sees a new file on the shared home up to ~45 s late, but a write into an existing file within a second when it is reopened (measured). No refresh on open (`swiftbar.refreshOnOpen`): SwiftBar waits for the plugin before showing the menu.
+- Starting a job shows `new <preset> job · starting…` within a second: `gimlet start` writes a local note and redraws, and that redraw reuses the last job list instead of asking GenomeDK. The line stays until the job runs (wait_start redraws) or the next refresh; only a failed start redraws at once. Menu items that run start or stop don't also carry `refresh=true`, since those commands redraw by themselves.
 - Notifications use `osascript display notification`.
 - Status checks first test the shared connection (`ssh -O check`) and never open a new login, so a logged-out menu doesn't cause repeated failed logins.

@@ -1,15 +1,18 @@
 #!/bin/bash
 # gimlet job: holds a compute node for VS Code and ends itself after
 # IDLE_MINUTES without any ssh connection from you to this node.
-# gimlet submits it by piping it into sbatch; nothing is stored on GenomeDK.
+# gimlet submits it by piping it into sbatch.
 
-# The menu reads the job comment: "<preset> connected" or "<preset> idle <minutes>".
+# The menu reads ~/.gimlet/<jobid>: "connected" or "idle <minutes>".
+# It is only written when the text changes, and removed when the job ends.
+status=~/.gimlet/$SLURM_JOB_ID
 report() {
     [ "$1" = "$reported" ] && return
-    scontrol update JobId="$SLURM_JOB_ID" Comment="$PRESET $1"
+    echo "$1" > "$status"
     reported=$1
 }
 
+trap 'rm -f "$status"' EXIT
 trap 'exit' TERM
 
 idle=0

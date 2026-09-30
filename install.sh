@@ -22,6 +22,7 @@ fi
 if [ ! -f "$CONF_DIR/settings" ]; then
     read -rp "GenomeDK username: " username
     read -rp "Slurm account (project): " account
+    [[ "$username$account" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "Use only letters, digits, '_', '.' and '-'."; exit 1; }
     sed -e "s/^USERNAME=.*/USERNAME=$username/" -e "s/^ACCOUNT=.*/ACCOUNT=$account/" \
         "$HERE/settings.example" > "$CONF_DIR/settings"
 fi
@@ -43,7 +44,8 @@ plugins=$(defaults read com.ameba.SwiftBar PluginDirectory 2> /dev/null) || {
 }
 plugins="${plugins/#\~/$HOME}"
 mkdir -p "$plugins"
-cat > "$plugins/gimlet.15s.sh" <<EOF
+rm -f "$plugins"/gimlet.{15s,1m,5m}.sh  # older installs refreshed more often
+cat > "$plugins/gimlet.2m.sh" <<EOF
 #!/bin/bash
 # <xbar.title>gimlet</xbar.title>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
@@ -52,8 +54,8 @@ cat > "$plugins/gimlet.15s.sh" <<EOF
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
 exec "$HERE/gimlet" menu
 EOF
-chmod +x "$plugins/gimlet.15s.sh"
-echo "Menu bar plugin written to $plugins/gimlet.15s.sh"
+chmod +x "$plugins/gimlet.2m.sh"
+echo "Menu bar plugin written to $plugins/gimlet.2m.sh"
 
 # Start SwiftBar now and at every login
 osascript -e 'on run argv' -e 'tell application "System Events" to if not (exists login item "SwiftBar") then make login item at end with properties {path:(item 1 of argv), hidden:true}' -e 'end run' "$swiftbar" > /dev/null \

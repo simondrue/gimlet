@@ -15,4 +15,4 @@ TIME=12:00:00
 IDLE_MINUTES=60
 
 # Job sizes offered under "Start new job", as name:cpus:memory.
-PRESETS="small:2:4G medium:4:8G large:8:16G"
+PRESETS="shot:2:4G double:4:8G pitcher:8:16G"
