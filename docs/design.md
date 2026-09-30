@@ -29,11 +29,15 @@ A number in a circle (SF Symbol) = running jobs, plus `+N` for jobs waiting in t
 ## Menu
 
 ```
-gimlet-1 · shot · s21n34 · 9h12m left · 🔌 connected
+gimlet-1 · 🔌 Connected
    ├ Open VS Code
-   └ Stop job
-gimlet-2 · pitcher · waiting (queue)
-   └ Cancel
+   ├ Stop job
+   ├ ───
+   └ Preset: shot         (small grey details: Cores, Mem, Node, Time left, Job ID)
+gimlet-2 · ⏳ Waiting
+   ├ Cancel
+   ├ ───
+   └ Preset: pitcher      (small grey details: Cores, Mem, Waiting: <reason>, Job ID)
 ───
 Start new job ▸  shot / double / pitcher
 Settings…

@@ -120,14 +120,14 @@ remote() {
 }
 
 # Prints one line per gimlet job, sorted by slot:
-#   name|jobid|state|node|timeleft|preset|reason|connection
+#   name|jobid|state|node|timeleft|preset|reason|connection|cpus|mem
 # The job comment holds the preset; ~/.gimlet/<jobid> on GenomeDK holds "connected" or
 # "idle <minutes>" once the job runs. Files of jobs that are gone (e.g. killed before their
 # own cleanup) are removed here; the minute's grace spares a file created just after squeue ran.
 # squeue can list other users' jobs despite -u, so the owner is checked here too.
 fetch() {
     remote bash -s -- "$USERNAME" <<'REMOTE' |
-jobs=$(squeue -u "$1" -h -o '%i|%j|%T|%N|%L|%k|%r|%u') || exit 1
+jobs=$(squeue -u "$1" -h -o '%i|%j|%T|%N|%L|%k|%r|%u|%C|%m') || exit 1
 echo "$jobs"
 echo ==
 for f in ~/.gimlet/*; do
@@ -140,8 +140,8 @@ REMOTE
         awk -F'|' -v user="$USERNAME" '
             $0 == "==" { status = 1; next }
             status { split($0, a, " "); conn[a[1]] = a[2] == "connected" ? "connected" : a[2] == "idle" ? "idle " a[3] "m" : ""; next }
-            $8 == user && $2 ~ /^gimlet-[0-9]+$/ { line[++n] = $2 "|" $1 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7; id[n] = $1 }
-            END { for (i = 1; i <= n; i++) print line[i] "|" conn[id[i]] }' |
+            $8 == user && $2 ~ /^gimlet-[0-9]+$/ { line[++n] = $2 "|" $1 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7; id[n] = $1; res[n] = $9 "|" $10 }
+            END { for (i = 1; i <= n; i++) print line[i] "|" conn[id[i]] "|" res[i] }' |
         sort -t- -k2 -n
 }
 
@@ -195,8 +195,14 @@ footer() {
     echo "${quotes[10#$(date +%M) * ${#quotes[@]} / 60]} | size=11 color=$GREY"
 }
 
+# A job's submenu detail line: grey label, value aligned in a monospace column.
+# refresh=true keeps it enabled; macOS draws disabled lines all grey.
+detail() {
+    printf -- '--\e[90m%-11s\e[0m%s | ansi=true font=Menlo size=11 refresh=true\n' "$1:" "$2"
+}
+
 menu() {
-    local jobs running pending starting name id state node left preset reason conn echo_stop p n c m
+    local jobs running pending starting name id state node left preset reason conn cpus mem echo_stop p n c m
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
 
     if ! logged_in; then
@@ -237,30 +243,34 @@ menu() {
 
     # Lines with a submenu get a harmless refresh action: SwiftBar 2.1.1 greys out
     # action-less submenu lines when their text changes (swiftbar/SwiftBar#521).
-    while IFS='|' read -r name id state node left preset reason conn; do
+    while IFS='|' read -r name id state node left preset reason conn cpus mem; do
         [ -n "$name" ] || continue
         case $state in
             RUNNING)
                 echo_stop="--Stop job | bash=\"$SELF\" param1=stop param2=$id param3=${conn%% *} terminal=false"
                 case $conn in
-                    connected) conn="🔌 connected" ;;
-                    idle*) conn="💤 $conn" ;;
-                    *) conn="starting…" ;;
+                    connected) conn="🔌 Connected" ;;
+                    idle*) conn="💤 Idle ${conn#idle }" ;;
+                    *) conn="Starting…" ;;
                 esac
-                echo "$name · $preset · $node · $(pretty "$left") left · $conn | refresh=true"
+                echo "$name · $conn | refresh=true"
                 echo "--Open VS Code | bash=\"$SELF\" param1=open param2=$name terminal=false"
                 echo "$echo_stop"
+                echo "-----"
+                detail Preset "$preset"; detail Cores "$cpus"; detail Mem "$mem"; detail Node "$node"; detail "Time left" "$left"; detail "Job ID" "$id"
                 ;;
             PENDING)
-                echo "$name · $preset · waiting ($reason) | refresh=true"
+                echo "$name · ⏳ Waiting | refresh=true"
                 echo "--Cancel | bash=\"$SELF\" param1=stop param2=$id terminal=false"
+                echo "-----"
+                detail Preset "$preset"; detail Cores "$cpus"; detail Mem "$mem"; detail Waiting "$reason"; detail "Job ID" "$id"
                 ;;
             *)
-                echo "$name · $preset · $(tr '[:upper:]' '[:lower:]' <<< "$state")"
+                echo "$name · $(tr '[:upper:]' '[:lower:]' <<< "$state")"
                 ;;
         esac
     done <<< "$jobs"
-    [ -n "$starting" ] && echo "new $starting job · starting… | refresh=true"
+    [ -n "$starting" ] && echo "new $starting job · Starting… | refresh=true"
     [ -n "$jobs$starting" ] && echo "---"
 
     echo "Start new job | refresh=true"
