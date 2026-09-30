@@ -30,8 +30,7 @@ A number in a circle (SF Symbol) = running jobs, plus `+N` for jobs waiting in t
 
 ```
 gimlet-1 · small · s21n34 · 9h12m left · 🔌 connected
-   ├ Open in VS Code ▸  favourites / recent / Other…
-   ├ Copy host name
+   ├ Open VS Code
    └ Stop job
 gimlet-2 · large · waiting (queue)
    └ Cancel
@@ -42,10 +41,7 @@ Log in to GenomeDK        (only when the connection is down)
 ```
 
 - **Stop job** asks for confirmation only if a VS Code window is connected.
-- **Open in VS Code** runs `code --remote ssh-remote+gimlet-N <folder>`.
-  - Favourites: the 5 folders the app has opened most often (counted automatically).
-  - Recent: the latest folders opened through the app.
-  - Other…: type a path.
+- **Open VS Code** runs `code --new-window --remote ssh-remote+gimlet-N`: an empty window on the node, where File → Open Folder browses GenomeDK. (Favourite and recent folder lists were dropped: browsing is easier than remembering paths, and VS Code's own recent list covers reopening.)
 
 ## Settings
 

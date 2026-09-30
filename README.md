@@ -31,7 +31,7 @@ If you move the repo, run `install.sh` again.
 
 1. Click the icon → **Log in to GenomeDK…**. A Terminal window opens. Type your 2FA code if asked. The login is shared by the menu and all VS Code windows until your network changes.
 2. **Start new job** → small / medium / large. The icon turns orange while the job waits, and a notification tells you when it runs.
-3. On the job → **Open in VS Code** → a folder. Or in VS Code, pick `gimlet-1` from Remote-SSH's host list.
+3. On the job → **Open VS Code**. A VS Code window opens on the node; use File → Open Folder to browse GenomeDK. Or in VS Code, pick `gimlet-1` from Remote-SSH's host list.
 4. Close your VS Code windows when done. The job ends by itself 60 minutes later, or stop it from the menu.
 
 Work still running on the node when the job ends (including tmux) is killed. Use `sbatch` for long runs.

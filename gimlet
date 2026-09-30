@@ -3,7 +3,7 @@
 #
 #   gimlet start <preset>      submit a new job (small, medium, large, ...)
 #   gimlet stop <jobid>        cancel a job
-#   gimlet open <host> [dir]   open VS Code on gimlet-N (asks for a folder if none given)
+#   gimlet open <host> [dir]   open VS Code on gimlet-N (an empty window if no dir is given)
 #   gimlet login               log in to GenomeDK (2FA) and keep the connection open
 #   gimlet list                show your gimlet jobs
 #   gimlet menu                SwiftBar menu output
@@ -18,7 +18,6 @@ CONF_DIR="$HOME/.config/gimlet"
 SETTINGS="$CONF_DIR/settings"
 SSH_CONFIG="$CONF_DIR/ssh_config"
 SOCKET="$CONF_DIR/login.sock"
-FOLDERS="$CONF_DIR/folders"   # every folder opened in VS Code, one per line
 STATE="$CONF_DIR/state"       # "jobid state warned" per job, to notice changes between refreshes
 CODE="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
 
@@ -44,6 +43,20 @@ die() {
 
 refresh() {
     open -g "swiftbar://refreshplugin?name=gimlet" 2>/dev/null || true
+}
+
+# Menu bar pill with a coloured dot, as SwiftBar image params for light and dark menu bars.
+# Images are drawn once per text and colour, then reused.
+pill() {
+    local text=$1 dot=$2 file mode fg images=""
+    mkdir -p "$CONF_DIR/icons"
+    for mode in light dark; do
+        [ $mode = light ] && fg="#1D1D1F" || fg="#FFFFFF"
+        file="$CONF_DIR/icons/$(tr ' +' '_p' <<< "$text")-${dot#\#}-$mode.png"
+        [ -f "$file" ] || osascript -l JavaScript "$HERE/gimlet-pill.js" "$text" "$dot" "$fg" "$file"
+        images="$images${images:+,}$(base64 -i "$file")"
+    done
+    echo "image=$images"
 }
 
 write_ssh_config() {
@@ -83,7 +96,8 @@ remote() {
 # Prints one line per gimlet job, sorted by slot:
 #   name|jobid|state|node|timeleft|preset|reason|connection
 fetch() {
-    remote "squeue -u $USERNAME -h -o '%i|%j|%T|%N|%L|%k|%r'; echo ==; cat ~/.gimlet/*.status 2>/dev/null; true" |
+    # Running jobs read their idle limit from ~/.gimlet/idle_minutes, so setting changes reach them.
+    remote "mkdir -p ~/.gimlet; echo $IDLE_MINUTES > ~/.gimlet/idle_minutes; squeue -u $USERNAME -h -o '%i|%j|%T|%N|%L|%k|%r'; echo ==; cat ~/.gimlet/*.status 2>/dev/null; true" |
         awk -F'|' '
             $0 == "==" { status = 1; next }
             status { split($0, a, " "); conn[a[1]] = (a[2] == "connected") ? "connected" : "idle " a[3] "m"; next }
@@ -107,14 +121,6 @@ pretty() {
     if [ "$s" -ge 3600 ]; then echo "$((s / 3600))h$((s % 3600 / 60))m"; else echo "$((s / 60))m"; fi
 }
 
-favourites() {
-    [ -f "$FOLDERS" ] && sort "$FOLDERS" | uniq -c | sort -rn | head -5 | sed 's/^ *[0-9]* //'
-}
-
-recent() {
-    [ -f "$FOLDERS" ] && tail -r "$FOLDERS" | awk '!seen[$0]++' | grep -vxF -f <(favourites) | head -5
-}
-
 # Notifies when a job leaves the queue or nears its time limit.
 notify_changes() {
     local name id state node left rest old warned new=""
@@ -134,22 +140,6 @@ notify_changes() {
     printf '%s' "$new" > "$STATE"
 }
 
-open_items() {
-    local host=$1 f
-    echo "--Open in VS Code"
-    while read -r f; do
-        [ -n "$f" ] && echo "----$f | bash=$SELF param1=open param2=$host param3=\"$f\" terminal=false"
-    done <<< "$(favourites)"
-    if [ -n "$(recent)" ]; then
-        echo "-----"
-        while read -r f; do
-            echo "----$f | bash=$SELF param1=open param2=$host param3=\"$f\" terminal=false"
-        done <<< "$(recent)"
-    fi
-    [ -s "$FOLDERS" ] && echo "-----"
-    echo "----Other… | bash=$SELF param1=open param2=$host terminal=false"
-}
-
 footer() {
     echo "---"
     echo "Settings… | bash=/usr/bin/open param1=-t param2=$SETTINGS terminal=false"
@@ -161,14 +151,14 @@ menu() {
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config
 
     if ! logged_in; then
-        echo "| sfimage=exclamationmark.circle.fill sfcolor=$RED"
+        echo "| $(pill "log in" $RED)"
         echo "---"
         echo "Log in to GenomeDK… | bash=$SELF param1=login terminal=true"
         footer
         return
     fi
     if ! jobs=$(fetch); then
-        echo "| sfimage=exclamationmark.circle sfcolor=$RED"
+        echo "| $(pill offline $RED)"
         echo "---"
         echo "GenomeDK is not answering"
         footer
@@ -179,14 +169,16 @@ menu() {
     running=$(grep -c '^[^|]*|[^|]*|RUNNING|' <<< "$jobs")
     pending=$(grep -c '^[^|]*|[^|]*|PENDING|' <<< "$jobs")
     if [ "$pending" -gt 0 ]; then
-        echo "+$pending | sfimage=$running.circle.fill sfcolor=$ORANGE"
+        echo "| $(pill "$running +$pending" $ORANGE)"
     elif [ "$running" -gt 0 ]; then
-        echo "| sfimage=$running.circle.fill sfcolor=$GREEN"
+        echo "| $(pill "$running" $GREEN)"
     else
-        echo "| sfimage=0.circle sfcolor=$GREY"
+        echo "| $(pill 0 $GREY)"
     fi
     echo "---"
 
+    # Lines with a submenu get a harmless refresh action: SwiftBar 2.1.1 greys out
+    # action-less submenu lines when their text changes (swiftbar/SwiftBar#521).
     while IFS='|' read -r name id state node left preset reason conn; do
         [ -n "$name" ] || continue
         case $state in
@@ -197,13 +189,12 @@ menu() {
                     idle*) conn="💤 $conn" ;;
                     *) conn="starting…" ;;
                 esac
-                echo "$name · $preset · $node · $(pretty "$left") left · $conn"
-                open_items "$name"
-                echo "--Copy host name | bash=$SELF param1=copy param2=$name terminal=false"
+                echo "$name · $preset · $node · $(pretty "$left") left · $conn | refresh=true"
+                echo "--Open VS Code | bash=$SELF param1=open param2=$name terminal=false"
                 echo "$echo_stop"
                 ;;
             PENDING)
-                echo "$name · $preset · waiting ($reason)"
+                echo "$name · $preset · waiting ($reason) | refresh=true"
                 echo "--Cancel | bash=$SELF param1=stop param2=$id terminal=false refresh=true"
                 ;;
             *)
@@ -213,7 +204,7 @@ menu() {
     done <<< "$jobs"
     [ -n "$jobs" ] && echo "---"
 
-    echo "Start new job"
+    echo "Start new job | refresh=true"
     for p in $PRESETS; do
         IFS=: read -r n c m <<< "$p"
         echo "--$n ($c CPU, $m) | bash=$SELF param1=start param2=$n terminal=false refresh=true"
@@ -254,16 +245,15 @@ stop() {
 }
 
 open_vscode() {
-    local host=${1:-} dir=${2:-} default code
+    local host=${1:-} dir=${2:-} code
     [ -n "$host" ] || die "usage: gimlet open <gimlet-N> [folder]"
-    if [ -z "$dir" ]; then
-        default=$(tail -n 1 "$FOLDERS" 2>/dev/null)
-        [ -n "$default" ] || default=$(remote 'echo $HOME')
-        dir=$(osascript -e 'on run argv' -e 'text returned of (display dialog "Folder on GenomeDK to open:" default answer (item 1 of argv))' -e 'end run' "$default") || exit 0
-    fi
-    echo "$dir" >> "$FOLDERS"
     code=$(command -v code || echo "$CODE")
-    "$code" --remote "ssh-remote+$host" "$dir"
+    if [ -n "$dir" ]; then
+        "$code" --remote "ssh-remote+$host" "$dir"
+    else
+        # An empty window on the node, where File > Open Folder browses GenomeDK.
+        "$code" --new-window --remote "ssh-remote+$host"
+    fi
 }
 
 login() {
@@ -277,7 +267,8 @@ login() {
 proxy() {
     local host=${1:-} node
     logged_in || die "not logged in to GenomeDK. Use 'Log in to GenomeDK' in the gimlet menu."
-    node=$(remote "squeue -u $USERNAME -h -t RUNNING -n $host -o %N") || die "GenomeDK is not answering"
+    # stdin is the connection being proxied, so the lookup must not read from it.
+    node=$(remote "squeue -u $USERNAME -h -t RUNNING -n $host -o %N" < /dev/null) || die "GenomeDK is not answering"
     [ -n "$node" ] || die "$host has no running job. Start one from the gimlet menu."
     exec ssh -F "$SSH_CONFIG" -o BatchMode=yes -W "$node:22" gimlet-login
 }
@@ -291,7 +282,6 @@ case ${1:-} in
     start) start "${2:-}" ;;
     stop) stop "${2:-}" "${3:-}" ;;
     open) open_vscode "${2:-}" "${3:-}" ;;
-    copy) printf '%s' "${2:-}" | pbcopy ;;
     login) login ;;
     list) list ;;
     menu) menu ;;
