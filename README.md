@@ -46,6 +46,8 @@ The same commands work in a terminal: `./gimlet list`, `./gimlet start shot`, `.
 
 When the repo tracks a git remote, the menu checks it once a day and shows **Update gimlet** when there are new commits.
 
+If the menu is slow to react to clicks: SwiftBar runs gimlet through your login shell, so a slow `~/.bash_profile` (e.g. `conda init`) delays every click. In SwiftBar's settings, set **Shell** to zsh. If the icon stops updating until you open the menu, quit and reopen SwiftBar.
+
 ## How it works
 
 | Piece | What it does |

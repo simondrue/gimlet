@@ -23,6 +23,7 @@ SSH_CONFIG="$CONF_DIR/ssh_config"
 SOCKET="$CONF_DIR/login.sock"
 STATE="$CONF_DIR/state"       # "jobid state warned name" per job, to notice changes between refreshes
 STARTING="$CONF_DIR/starting" # preset of a start in progress, shown in the menu until the job is submitted
+STOPPING="$CONF_DIR/stopping" # one file per job being stopped, shown in the menu until the stop is done
 JOBS="$CONF_DIR/jobs"         # the job list from the last menu refresh
 CODE="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
 
@@ -230,7 +231,7 @@ detail() {
 }
 
 menu() {
-    local jobs running pending starting name id state node left preset reason conn cpus mem echo_stop p n c m
+    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem echo_stop p n c m
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
 
     if ! logged_in; then
@@ -240,10 +241,11 @@ menu() {
         footer
         return
     fi
-    # A start in progress; one older than a minute was left by a start that died.
+    # A start or stop in progress; one older than a minute was left by a start or stop that died.
     # Its redraw reuses the last job list, so it shows at once.
     starting=$(find "$STARTING" -mmin -1 -exec cat {} \; 2>/dev/null)
-    if [ -n "$starting" ] && [ -f "$JOBS" ]; then
+    stopping=$(find "$STOPPING" -type f -mmin -1 -exec basename {} \; 2>/dev/null | paste -sd' ' -)
+    if [ -n "$starting$stopping" ] && [ -f "$JOBS" ]; then
         jobs=$(cat "$JOBS")
     elif jobs=$(fetch); then
         printf '%s' "$jobs" > "$JOBS"
@@ -257,8 +259,10 @@ menu() {
         return
     fi
 
-    running=$(grep -c '^[^|]*|[^|]*|RUNNING|' <<< "$jobs")
-    pending=$(grep -c '^[^|]*|[^|]*|PENDING|' <<< "$jobs")
+    # Jobs being stopped are not counted.
+    active=$(awk -F'|' -v s=" $stopping " '!index(s, " " $2 " ")' <<< "$jobs")
+    running=$(grep -c '^[^|]*|[^|]*|RUNNING|' <<< "$active")
+    pending=$(grep -c '^[^|]*|[^|]*|PENDING|' <<< "$active")
     [ -n "$starting" ] && pending=$((pending + 1))
     if [ "$pending" -gt 0 ]; then
         echo "| $(pill "$running +$pending" $ORANGE)"
@@ -273,6 +277,7 @@ menu() {
     # action-less submenu lines when their text changes (swiftbar/SwiftBar#521).
     while IFS='|' read -r name id state node left preset reason conn cpus mem; do
         [ -n "$name" ] || continue
+        case " $stopping " in *" $id "*) state=STOPPING ;; esac
         case $state in
             RUNNING)
                 echo_stop="--Stop job | bash=\"$SELF\" param1=stop param2=$id param3=${conn%% *} terminal=false"
@@ -293,13 +298,16 @@ menu() {
                 echo "-----"
                 detail Preset "$preset"; detail Cores "$cpus"; detail Mem "$mem"; detail Waiting "$reason"; detail "Job ID" "$id"
                 ;;
+            STOPPING)
+                echo "$name · Stopping… | color=$GREY"
+                ;;
             *)
                 echo "$name · $(tr '[:upper:]' '[:lower:]' <<< "$state")"
                 ;;
         esac
     done <<< "$jobs"
     [ -n "$starting" ] && echo "new $starting job · Starting… | refresh=true"
-    [ "$(grep -c . <<< "$jobs")" -gt 1 ] && echo "Stop all jobs | bash=\"$SELF\" param1=stop-all terminal=false"
+    [ "$(grep -c . <<< "$active")" -gt 1 ] && echo "Stop all jobs | bash=\"$SELF\" param1=stop-all terminal=false"
     [ -n "$jobs$starting" ] && echo "---"
 
     echo "Start new job | refresh=true"
@@ -366,25 +374,31 @@ wait_start() {
 stop() {
     local id=${1:-} conn=${2:-} out
     [ -n "$id" ] || die "usage: gimlet stop <jobid>"
-    # Only ever cancel our own gimlet jobs.
-    out=$(fetch) || die "GenomeDK is not answering"
-    awk -F'|' -v id="$id" '$2 == id { found = 1 } END { exit !found }' <<< "$out" || die "job $id is not one of your gimlet jobs"
+    # Only ever cancel our own gimlet jobs. Checked against the last job list, so the stop needs no extra ssh call.
+    awk -F'|' -v id="$id" '$2 == id { found = 1 } END { exit !found }' "$JOBS" 2>/dev/null || die "job $id is not one of your gimlet jobs"
     if [ "$conn" = connected ]; then
         osascript -e 'display dialog "A VS Code window is connected to this job. Stop it anyway?" buttons {"Cancel", "Stop job"} default button "Cancel" with icon caution' >/dev/null || exit 0
     fi
+    mark_stopping "$id"
     out=$(remote "scancel -u $USERNAME $id && rm -f ~/.gimlet/$id" 2>&1) || die "could not stop job $id: $out"
+}
+
+# Shows the jobs as stopping at once. The marks go when the stop ends, and the menu then asks GenomeDK.
+mark_stopping() {
+    mkdir -p "$STOPPING"
+    (cd "$STOPPING" && touch "$@")
+    trap "(cd '$STOPPING' && rm -f $*); refresh" EXIT
     refresh
 }
 
 stop_all() {
     local ids out
-    out=$(fetch) || die "GenomeDK is not answering"
-    ids=$(awk -F'|' '{ print $2 }' <<< "$out" | paste -sd' ' -)
+    ids=$(awk -F'|' '{ print $2 }' "$JOBS" 2>/dev/null | paste -sd' ' -)
     [ -n "$ids" ] || die "you have no gimlet jobs"
     osascript -e 'on run argv' -e 'display dialog "Stop all " & (item 1 of argv) & " gimlet jobs?" buttons {"Cancel", "Stop all"} default button "Cancel" with icon caution' -e 'end run' \
         "$(wc -w <<< "$ids" | tr -d ' ')" > /dev/null || exit 0
+    mark_stopping $ids
     out=$(remote "scancel -u $USERNAME $ids && rm -f$(printf ' ~/.gimlet/%s' $ids)" 2>&1) || die "could not stop jobs: $out"
-    refresh
 }
 
 open_vscode() {
