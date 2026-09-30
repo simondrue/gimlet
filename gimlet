@@ -244,6 +244,8 @@ detail() {
 
 menu() {
     local jobs active running pending starting stopping name id state node left preset reason conn cpus mem echo_stop p n c m
+    # One menu run at a time, so two quick refreshes don't both see a change and notify twice.
+    [ -n "${GIMLET_LOCKED:-}" ] || GIMLET_LOCKED=1 exec lockf -k "$CONF_DIR/menu.lock" "$SELF" menu
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
 
     if ! logged_in; then
@@ -393,6 +395,7 @@ stop() {
     fi
     mark_stopping "$id"
     out=$(remote "scancel -u $USERNAME $id && rm -f ~/.gimlet/$id" 2>&1) || die "could not stop job $id: $out"
+    forget "$id"
 }
 
 # Shows the jobs as stopping at once. The marks go when the stop ends, and the menu then asks GenomeDK.
@@ -403,6 +406,11 @@ mark_stopping() {
     refresh
 }
 
+# Drops stopped jobs from the last job list, so a redraw that reuses it (while a start is in progress) doesn't count them again.
+forget() {
+    awk -F'|' -v s=" $* " '!index(s, " " $2 " ")' "$JOBS" > "$JOBS.tmp" && mv "$JOBS.tmp" "$JOBS"
+}
+
 stop_all() {
     local ids out
     ids=$(awk -F'|' '{ print $2 }' "$JOBS" 2>/dev/null | paste -sd' ' -)
@@ -411,6 +419,7 @@ stop_all() {
         "$(wc -w <<< "$ids" | tr -d ' ')" > /dev/null || exit 0
     mark_stopping $ids
     out=$(remote "scancel -u $USERNAME $ids && rm -f$(printf ' ~/.gimlet/%s' $ids)" 2>&1) || die "could not stop jobs: $out"
+    forget $ids
 }
 
 open_vscode() {
