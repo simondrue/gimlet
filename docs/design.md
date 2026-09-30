@@ -58,12 +58,12 @@ Log in to GenomeDK        (only when the connection is down)
 | Time limit | `12:00:00` (all presets) |
 | Idle minutes before auto-stop | 60 |
 
-Settings live in a plain config file. **Settings…** opens it or asks simple dialog questions.
+Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings…** opens it in a text editor.
 
 ## Jobs
 
-- Submitted with `sbatch`, job name `gimlet`. The app lists and manages **only** jobs with this name. Old `tunnel` jobs are ignored.
-- Each job gets the lowest free slot: `gimlet-1`, `gimlet-2`, … Slot names are reused, so VS Code's recent list keeps working.
+- Submitted with `sbatch`. The job name is its slot, `gimlet-1`, `gimlet-2`, … (the lowest free one), and the preset goes in the job comment. The app lists and manages **only** jobs named `gimlet-N`. Old `tunnel` jobs are ignored.
+- Slot names are reused, so VS Code's recent list keeps working.
 - New jobs pass `--exclude=<nodes of existing gimlet jobs>`. Two jobs on one node would make idle detection unreliable.
 - **A job ends when**:
   1. it is stopped from the menu,
@@ -79,8 +79,8 @@ Settings live in a plain config file. **Settings…** opens it or asks simple di
 
 ## SSH
 
-- gimlet owns one file (e.g. `~/.ssh/gimlet/config`), pulled in by an `Include` line in `~/.ssh/config`. The user's own config is otherwise untouched.
-- That file holds a fixed `Host gimlet-*` entry. A small helper (a ProxyCommand) looks up the slot's node through `squeue` when you connect and **refuses** if that slot has no running job. The file is never rewritten.
+- gimlet owns one file (`~/.config/gimlet/ssh_config`), pulled in by an `Include` line in `~/.ssh/config`. The user's own config is otherwise untouched.
+- That file holds a fixed `Host gimlet-*` entry. A small helper (a ProxyCommand) looks up the slot's node through `squeue` when you connect and **refuses** if that slot has no running job. The file only changes when the settings do.
 - One shared login connection (ControlMaster/ControlPersist) through the login node is used by the plugin's status checks and by all VS Code windows.
 - After a network change the shared connection dies and GenomeDK asks for 2FA again. The icon turns red, and **Log in to GenomeDK** opens Terminal so the code can be typed once. Status checks never prompt.
 
@@ -90,8 +90,9 @@ Settings live in a plain config file. **Settings…** opens it or asks simple di
 - Reading VS Code's internal recent-folders store: internal format, may break.
 - Tracking VS Code windows on the Mac: idle is detected on the node instead.
 
-## Open implementation details
+## Implementation choices
 
-- Exact check for "user has an ssh connection to this node" in the watchdog (e.g. user-owned `sshd` processes on the node, or `who`).
-- Status check interval (≈15–30 s) and how "connected" is shown per job.
-- Whether SwiftBar's notification support covers both notifications, or `osascript` is needed.
+- Watchdog: counts user-owned `sshd: user@…` / `sshd-session: user@…` processes on the node once a minute, and writes `connected` / `idle N` to `~/.gimlet/<jobid>.status`. The menu reads these files in the same ssh call as `squeue`.
+- The menu refreshes every 15 s (plugin file `gimlet.15s.sh`).
+- Notifications use `osascript display notification`.
+- Status checks first test the shared connection (`ssh -O check`) and never open a new login, so a logged-out menu doesn't cause repeated failed logins.

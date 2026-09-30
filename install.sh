@@ -1,0 +1,60 @@
+#!/bin/bash
+# Sets up gimlet: SwiftBar, your settings, the ssh config include and the menu bar plugin.
+# Safe to run again.
+set -eu
+
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+CONF_DIR="$HOME/.config/gimlet"
+INCLUDE="Include $CONF_DIR/ssh_config"
+
+mkdir -p "$CONF_DIR"
+
+# SwiftBar
+if [ ! -d /Applications/SwiftBar.app ]; then
+    command -v brew > /dev/null || { echo "Install Homebrew first: https://brew.sh"; exit 1; }
+    brew install --cask swiftbar
+fi
+
+# Settings
+if [ ! -f "$CONF_DIR/settings" ]; then
+    read -rp "GenomeDK username: " username
+    read -rp "Slurm account (project): " account
+    sed -e "s/^USERNAME=.*/USERNAME=$username/" -e "s/^ACCOUNT=.*/ACCOUNT=$account/" \
+        "$HERE/settings.example" > "$CONF_DIR/settings"
+fi
+"$HERE/gimlet" ssh-config
+
+# ssh reads Include lines placed after a Host line as part of that host, so it goes at the top.
+mkdir -p ~/.ssh
+touch ~/.ssh/config
+if ! grep -qxF "$INCLUDE" ~/.ssh/config; then
+    cp ~/.ssh/config ~/.ssh/config.before-gimlet
+    { echo "$INCLUDE"; echo; cat ~/.ssh/config.before-gimlet; } > ~/.ssh/config
+    echo "Added '$INCLUDE' to the top of ~/.ssh/config (backup in ~/.ssh/config.before-gimlet)"
+fi
+
+# Menu bar plugin, in SwiftBar's plugin folder (set to ~/SwiftBar if SwiftBar has none yet)
+plugins=$(defaults read com.ameba.SwiftBar PluginDirectory 2> /dev/null) || {
+    plugins="$HOME/SwiftBar"
+    defaults write com.ameba.SwiftBar PluginDirectory -string "$plugins"
+}
+plugins="${plugins/#\~/$HOME}"
+mkdir -p "$plugins"
+cat > "$plugins/gimlet.15s.sh" <<EOF
+#!/bin/bash
+# <xbar.title>gimlet</xbar.title>
+# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
+# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
+# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
+# <swiftbar.hideAbout>true</swiftbar.hideAbout>
+exec "$HERE/gimlet" menu
+EOF
+chmod +x "$plugins/gimlet.15s.sh"
+echo "Menu bar plugin written to $plugins/gimlet.15s.sh"
+
+# Start SwiftBar now and at every login
+osascript -e 'tell application "System Events" to if not (exists login item "SwiftBar") then make login item at end with properties {path:"/Applications/SwiftBar.app", hidden:true}' > /dev/null \
+    || echo "Could not add SwiftBar to login items; turn on 'Launch at login' in SwiftBar's preferences."
+open -a SwiftBar
+
+echo "Done. Click the gimlet icon in the menu bar and choose 'Log in to GenomeDK…'."

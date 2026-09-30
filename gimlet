@@ -1,0 +1,301 @@
+#!/bin/bash
+# gimlet: VS Code jobs on GenomeDK, driven from the SwiftBar menu or the terminal.
+#
+#   gimlet start <preset>      submit a new job (small, medium, large, ...)
+#   gimlet stop <jobid>        cancel a job
+#   gimlet open <host> [dir]   open VS Code on gimlet-N (asks for a folder if none given)
+#   gimlet login               log in to GenomeDK (2FA) and keep the connection open
+#   gimlet list                show your gimlet jobs
+#   gimlet menu                SwiftBar menu output
+#   gimlet proxy <host>        ssh ProxyCommand for gimlet-N (used by the generated ssh config)
+#   gimlet ssh-config          rewrite the generated ssh config from the settings
+
+set -u -o pipefail
+
+SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+HERE="$(dirname "$SELF")"
+CONF_DIR="$HOME/.config/gimlet"
+SETTINGS="$CONF_DIR/settings"
+SSH_CONFIG="$CONF_DIR/ssh_config"
+SOCKET="$CONF_DIR/login.sock"
+FOLDERS="$CONF_DIR/folders"   # every folder opened in VS Code, one per line
+STATE="$CONF_DIR/state"       # "jobid state warned" per job, to notice changes between refreshes
+CODE="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+
+GREEN="#34C759" ORANGE="#FF9500" GREY="#8E8E93" RED="#FF3B30"
+
+if [ ! -f "$SETTINGS" ]; then
+    [ "${1:-}" = menu ] && printf '| sfimage=exclamationmark.circle sfcolor=%s\n---\nRun install.sh to set up gimlet\n' "$RED"
+    echo "gimlet: no settings at $SETTINGS; run install.sh" >&2
+    exit 1
+fi
+source "$SETTINGS"
+
+notify() {
+    osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title "gimlet" subtitle (item 1 of argv)' -e 'end run' "$1" "$2"
+}
+
+# Menu actions run without a terminal, so errors also go to a notification.
+die() {
+    echo "gimlet: $*" >&2
+    [ -t 2 ] || notify "Error" "$*"
+    exit 1
+}
+
+refresh() {
+    open -g "swiftbar://refreshplugin?name=gimlet" 2>/dev/null || true
+}
+
+write_ssh_config() {
+    cat > "$SSH_CONFIG" <<EOF
+# Written by gimlet from $SETTINGS. Edits here are overwritten.
+
+Host gimlet-login
+    HostName $LOGIN_HOST
+    User $USERNAME
+    IdentityFile $IDENTITY_FILE
+    ControlMaster auto
+    ControlPath $SOCKET
+    ControlPersist yes
+    ServerAliveInterval 15
+    ServerAliveCountMax 3
+
+Host gimlet-* !gimlet-login
+    User $USERNAME
+    IdentityFile $IDENTITY_FILE
+    ProxyCommand "$SELF" proxy %n
+    # gimlet-N points at a different node each time, so its host key can't be pinned.
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR
+EOF
+}
+
+logged_in() {
+    ssh -F "$SSH_CONFIG" -O check gimlet-login 2>/dev/null
+}
+
+# Runs a command on the login node over the shared connection. Never prompts.
+remote() {
+    ssh -F "$SSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=10 gimlet-login "$@"
+}
+
+# Prints one line per gimlet job, sorted by slot:
+#   name|jobid|state|node|timeleft|preset|reason|connection
+fetch() {
+    remote "squeue -u $USERNAME -h -o '%i|%j|%T|%N|%L|%k|%r'; echo ==; cat ~/.gimlet/*.status 2>/dev/null; true" |
+        awk -F'|' '
+            $0 == "==" { status = 1; next }
+            status { split($0, a, " "); conn[a[1]] = (a[2] == "connected") ? "connected" : "idle " a[3] "m"; next }
+            $2 ~ /^gimlet-[0-9]+$/ { line[++n] = $2 "|" $1 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7; id[n] = $1 }
+            END { for (i = 1; i <= n; i++) print line[i] "|" conn[id[i]] }' |
+        sort -t- -k2 -n
+}
+
+# Slurm time (MM:SS, HH:MM:SS or D-HH:MM:SS) to seconds.
+seconds() {
+    local t=$1 d=0 h=0 m=0 s=0 a b c
+    case $t in *-*) d=${t%%-*}; t=${t#*-} ;; esac
+    IFS=: read -r a b c <<< "$t"
+    if [ -n "$c" ]; then h=$a m=$b s=$c; elif [ -n "$b" ]; then m=$a s=$b; else s=$a; fi
+    echo $(( ((d * 24 + 10#$h) * 60 + 10#$m) * 60 + 10#$s ))
+}
+
+pretty() {
+    local s
+    s=$(seconds "$1")
+    if [ "$s" -ge 3600 ]; then echo "$((s / 3600))h$((s % 3600 / 60))m"; else echo "$((s / 60))m"; fi
+}
+
+favourites() {
+    [ -f "$FOLDERS" ] && sort "$FOLDERS" | uniq -c | sort -rn | head -5 | sed 's/^ *[0-9]* //'
+}
+
+recent() {
+    [ -f "$FOLDERS" ] && tail -r "$FOLDERS" | awk '!seen[$0]++' | grep -vxF -f <(favourites) | head -5
+}
+
+# Notifies when a job leaves the queue or nears its time limit.
+notify_changes() {
+    local name id state node left rest old warned new=""
+    while IFS='|' read -r name id state node left rest; do
+        [ -n "$name" ] || continue
+        read -r _ old warned <<< "$(grep "^$id " "$STATE" 2>/dev/null)"
+        warned=${warned:-0}
+        if [ "$old" = PENDING ] && [ "$state" = RUNNING ]; then
+            notify "$name is running" "On node $node. Open it from the gimlet menu."
+        fi
+        if [ "$state" = RUNNING ] && [ "$warned" = 0 ] && [ "$(seconds "$left")" -lt 900 ]; then
+            notify "$name ends in $(pretty "$left")" "Save your work, the job reaches its time limit soon."
+            warned=1
+        fi
+        new="$new$id $state $warned"$'\n'
+    done <<< "$1"
+    printf '%s' "$new" > "$STATE"
+}
+
+open_items() {
+    local host=$1 f
+    echo "--Open in VS Code"
+    while read -r f; do
+        [ -n "$f" ] && echo "----$f | bash=$SELF param1=open param2=$host param3=\"$f\" terminal=false"
+    done <<< "$(favourites)"
+    if [ -n "$(recent)" ]; then
+        echo "-----"
+        while read -r f; do
+            echo "----$f | bash=$SELF param1=open param2=$host param3=\"$f\" terminal=false"
+        done <<< "$(recent)"
+    fi
+    [ -s "$FOLDERS" ] && echo "-----"
+    echo "----Other… | bash=$SELF param1=open param2=$host terminal=false"
+}
+
+footer() {
+    echo "---"
+    echo "Settings… | bash=/usr/bin/open param1=-t param2=$SETTINGS terminal=false"
+    echo "Refresh | refresh=true"
+}
+
+menu() {
+    local jobs running pending name id state node left preset reason conn echo_stop p n c m
+    [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config
+
+    if ! logged_in; then
+        echo "| sfimage=exclamationmark.circle.fill sfcolor=$RED"
+        echo "---"
+        echo "Log in to GenomeDK… | bash=$SELF param1=login terminal=true"
+        footer
+        return
+    fi
+    if ! jobs=$(fetch); then
+        echo "| sfimage=exclamationmark.circle sfcolor=$RED"
+        echo "---"
+        echo "GenomeDK is not answering"
+        footer
+        return
+    fi
+    notify_changes "$jobs"
+
+    running=$(grep -c '^[^|]*|[^|]*|RUNNING|' <<< "$jobs")
+    pending=$(grep -c '^[^|]*|[^|]*|PENDING|' <<< "$jobs")
+    if [ "$pending" -gt 0 ]; then
+        echo "+$pending | sfimage=$running.circle.fill sfcolor=$ORANGE"
+    elif [ "$running" -gt 0 ]; then
+        echo "| sfimage=$running.circle.fill sfcolor=$GREEN"
+    else
+        echo "| sfimage=0.circle sfcolor=$GREY"
+    fi
+    echo "---"
+
+    while IFS='|' read -r name id state node left preset reason conn; do
+        [ -n "$name" ] || continue
+        case $state in
+            RUNNING)
+                echo_stop="--Stop job | bash=$SELF param1=stop param2=$id param3=${conn%% *} terminal=false refresh=true"
+                case $conn in
+                    connected) conn="🔌 connected" ;;
+                    idle*) conn="💤 $conn" ;;
+                    *) conn="starting…" ;;
+                esac
+                echo "$name · $preset · $node · $(pretty "$left") left · $conn"
+                open_items "$name"
+                echo "--Copy host name | bash=$SELF param1=copy param2=$name terminal=false"
+                echo "$echo_stop"
+                ;;
+            PENDING)
+                echo "$name · $preset · waiting ($reason)"
+                echo "--Cancel | bash=$SELF param1=stop param2=$id terminal=false refresh=true"
+                ;;
+            *)
+                echo "$name · $preset · $(tr '[:upper:]' '[:lower:]' <<< "$state")"
+                ;;
+        esac
+    done <<< "$jobs"
+    [ -n "$jobs" ] && echo "---"
+
+    echo "Start new job"
+    for p in $PRESETS; do
+        IFS=: read -r n c m <<< "$p"
+        echo "--$n ($c CPU, $m) | bash=$SELF param1=start param2=$n terminal=false refresh=true"
+    done
+    footer
+}
+
+start() {
+    local preset=${1:-} spec="" p cpus mem jobs slot exclude args out
+    for p in $PRESETS; do [ "${p%%:*}" = "$preset" ] && spec=$p; done
+    [ -n "$spec" ] || die "unknown preset '$preset' (settings has: $PRESETS)"
+    IFS=: read -r _ cpus mem <<< "$spec"
+
+    logged_in || die "not logged in to GenomeDK, run: gimlet login"
+    jobs=$(fetch) || die "GenomeDK is not answering"
+    slot=1
+    while grep -q "^gimlet-$slot|" <<< "$jobs"; do slot=$((slot + 1)); done
+    # Keep jobs on separate nodes, so each job's idle check only sees its own connections.
+    exclude=$(awk -F'|' '$3 == "RUNNING" { print $4 }' <<< "$jobs" | paste -sd, -)
+
+    args="--parsable --job-name=gimlet-$slot --comment=$preset --account=$ACCOUNT --time=$TIME"
+    args="$args --cpus-per-task=$cpus --mem=$mem --output=.gimlet/%j.log --export=ALL,IDLE_MINUTES=$IDLE_MINUTES"
+    [ -n "$PARTITION" ] && args="$args --partition=$PARTITION"
+    [ -n "$exclude" ] && args="$args --exclude=$exclude"
+    out=$(remote "mkdir -p .gimlet && sbatch $args" < "$HERE/gimlet-job.sh" 2>&1) || die "could not start gimlet-$slot: $out"
+    echo "Submitted gimlet-$slot (job $out)"
+    refresh
+}
+
+stop() {
+    local id=${1:-} conn=${2:-} out
+    [ -n "$id" ] || die "usage: gimlet stop <jobid>"
+    if [ "$conn" = connected ]; then
+        osascript -e 'display dialog "A VS Code window is connected to this job. Stop it anyway?" buttons {"Cancel", "Stop job"} default button "Cancel" with icon caution' >/dev/null || exit 0
+    fi
+    out=$(remote "scancel $id" 2>&1) || die "could not stop job $id: $out"
+    refresh
+}
+
+open_vscode() {
+    local host=${1:-} dir=${2:-} default code
+    [ -n "$host" ] || die "usage: gimlet open <gimlet-N> [folder]"
+    if [ -z "$dir" ]; then
+        default=$(tail -n 1 "$FOLDERS" 2>/dev/null)
+        [ -n "$default" ] || default=$(remote 'echo $HOME')
+        dir=$(osascript -e 'on run argv' -e 'text returned of (display dialog "Folder on GenomeDK to open:" default answer (item 1 of argv))' -e 'end run' "$default") || exit 0
+    fi
+    echo "$dir" >> "$FOLDERS"
+    code=$(command -v code || echo "$CODE")
+    "$code" --remote "ssh-remote+$host" "$dir"
+}
+
+login() {
+    echo "Logging in to $LOGIN_HOST as $USERNAME. Enter your 2FA code if asked."
+    ssh -F "$SSH_CONFIG" gimlet-login true || exit 1
+    echo "Logged in. You can close this window."
+    refresh
+}
+
+# ProxyCommand for gimlet-N: finds the node of that slot's running job and connects to it.
+proxy() {
+    local host=${1:-} node
+    logged_in || die "not logged in to GenomeDK. Use 'Log in to GenomeDK' in the gimlet menu."
+    node=$(remote "squeue -u $USERNAME -h -t RUNNING -n $host -o %N") || die "GenomeDK is not answering"
+    [ -n "$node" ] || die "$host has no running job. Start one from the gimlet menu."
+    exec ssh -F "$SSH_CONFIG" -o BatchMode=yes -W "$node:22" gimlet-login
+}
+
+list() {
+    logged_in || die "not logged in to GenomeDK, run: gimlet login"
+    fetch | column -t -s '|'
+}
+
+case ${1:-} in
+    start) start "${2:-}" ;;
+    stop) stop "${2:-}" "${3:-}" ;;
+    open) open_vscode "${2:-}" "${3:-}" ;;
+    copy) printf '%s' "${2:-}" | pbcopy ;;
+    login) login ;;
+    list) list ;;
+    menu) menu ;;
+    proxy) proxy "${2:-}" ;;
+    ssh-config) write_ssh_config ;;
+    *) sed -n '2,12s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
+esac

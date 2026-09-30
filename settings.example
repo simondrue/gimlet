@@ -1,0 +1,18 @@
+# gimlet settings. Changes apply at the next menu refresh.
+
+# Your GenomeDK login and the Slurm account (project) jobs are billed to.
+USERNAME=
+ACCOUNT=
+# Leave empty to use the default partition.
+PARTITION=
+
+LOGIN_HOST=login.genome.au.dk
+IDENTITY_FILE=~/.ssh/id_ed25519
+
+# Time limit for every job (HH:MM:SS), and how long a job may sit with
+# no VS Code connection before it ends itself.
+TIME=12:00:00
+IDLE_MINUTES=60
+
+# Job sizes offered under "Start new job", as name:cpus:memory.
+PRESETS="small:2:4G medium:4:8G large:8:16G"
