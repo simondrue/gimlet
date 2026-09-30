@@ -310,8 +310,29 @@ menu() {
     footer
 }
 
+# Run on the login node by start: submits gimlet-job.sh to the lowest free slot and prints "gimlet-N jobid".
+submit_script() {
+    cat <<'REMOTE'
+set -o pipefail
+user=$1 args=$2
+jobs=$(squeue -u "$user" -h -o '%j|%T|%N|%u' | awk -F'|' -v u="$user" '$4 == u && $1 ~ /^gimlet-[0-9]+$/') || exit 1
+slot=1
+while grep -q "^gimlet-$slot|" <<< "$jobs"; do slot=$((slot + 1)); done
+# Keep jobs on separate nodes, so each job's idle check only sees its own connections.
+exclude=$(awk -F'|' '$2 == "RUNNING" { print $3 }' <<< "$jobs" | paste -sd, -)
+id=$(sbatch $args --job-name=gimlet-$slot ${exclude:+--exclude=$exclude} <<'GIMLET_JOB'
+REMOTE
+    cat "$HERE/gimlet-job.sh"
+    cat <<'REMOTE'
+GIMLET_JOB
+) || exit 1
+# The empty status file lets wait_start see the job's first write at once.
+mkdir -p ~/.gimlet && : > ~/.gimlet/$id && echo "gimlet-$slot $id"
+REMOTE
+}
+
 start() {
-    local preset=${1:-} spec="" p cpus mem jobs slot exclude args out
+    local preset=${1:-} spec="" p cpus mem args out
     for p in $PRESETS; do [ "${p%%:*}" = "$preset" ] && spec=$p; done
     [ -n "$spec" ] || die "unknown preset '$preset' (settings has: $PRESETS)"
     IFS=: read -r _ cpus mem <<< "$spec"
@@ -324,20 +345,13 @@ start() {
     refresh
 
     logged_in || die "not logged in to GenomeDK, run: gimlet login"
-    jobs=$(fetch) || die "GenomeDK is not answering"
-    slot=1
-    while grep -q "^gimlet-$slot|" <<< "$jobs"; do slot=$((slot + 1)); done
-    # Keep jobs on separate nodes, so each job's idle check only sees its own connections.
-    exclude=$(awk -F'|' '$3 == "RUNNING" { print $4 }' <<< "$jobs" | paste -sd, -)
-
-    args="--parsable --job-name=gimlet-$slot --comment=$preset --account=$ACCOUNT --time=$TIME"
+    args="--parsable --comment=$preset --account=$ACCOUNT --time=$TIME"
     args="$args --cpus-per-task=$cpus --mem=$mem --output=/dev/null --export=ALL,IDLE_MINUTES=$IDLE_MINUTES"
     [ -n "$PARTITION" ] && args="$args --partition=$PARTITION"
-    [ -n "$exclude" ] && args="$args --exclude=$exclude"
-    # The empty status file lets wait_start see the job's first write at once.
-    out=$(remote "id=\$(sbatch $args) && mkdir -p ~/.gimlet && : > ~/.gimlet/\$id && echo \$id" < "$HERE/gimlet-job.sh" 2>&1) ||
-        die "could not start gimlet-$slot: $out"
-    echo "Submitted gimlet-$slot (job $out)"
+    # Picking the slot and submitting happen in one call: each ssh command costs seconds on a busy login node.
+    out=$(submit_script | remote bash -s -- "$USERNAME" "'$args'" 2>&1) || die "could not start a job: $out"
+    echo "Submitted $out"
+    out=${out##* }
     wait_start "$out" < /dev/null > /dev/null 2>&1 &
 }
 
