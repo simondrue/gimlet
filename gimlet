@@ -12,6 +12,7 @@
 #   gimlet ssh-config          rewrite the generated ssh config from the settings
 #   gimlet doctor              check the setup
 #   gimlet update              update gimlet from its git remote
+#   gimlet check-update        check its git remote for updates now
 
 set -u -o pipefail
 
@@ -219,7 +220,7 @@ footer() {
     echo "${quotes[10#$(date +%M) * ${#quotes[@]} / 60]} | size=11 color=$GREY"
 }
 
-# Offers an update when the repo's upstream branch has new commits. Fetches at most daily, in the background.
+# Offers an update when the repo's upstream branch has new commits, else a line to check now. Fetches at most daily, in the background.
 update_line() {
     local behind
     git -C "$HERE" rev-parse -q --verify '@{u}' > /dev/null 2>&1 || return
@@ -228,7 +229,11 @@ update_line() {
         GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" git -C "$HERE" fetch -q < /dev/null > /dev/null 2>&1 &
     fi
     behind=$(git -C "$HERE" rev-list --count 'HEAD..@{u}' 2>/dev/null)
-    [ "${behind:-0}" -gt 0 ] && echo "Update gimlet ($behind new) | bash=\"$SELF\" param1=update terminal=false"
+    if [ "${behind:-0}" -gt 0 ]; then
+        echo "Update gimlet ($behind new) | bash=\"$SELF\" param1=update terminal=false"
+    else
+        echo "gimlet is up to date | bash=\"$SELF\" param1=check-update terminal=false color=$GREY tooltip=\"Click to check now\""
+    fi
 }
 
 # A job's submenu detail line: grey label, value aligned in a monospace column.
@@ -445,6 +450,19 @@ update() {
     refresh
 }
 
+check_update() {
+    local out behind
+    touch "$CONF_DIR/update-check"
+    out=$(git -C "$HERE" fetch -q 2>&1) || die "could not check for updates: $out"
+    behind=$(git -C "$HERE" rev-list --count 'HEAD..@{u}')
+    if [ "$behind" -gt 0 ]; then
+        notify "Update available ✨" "$behind new. Choose Update gimlet in the menu."
+    else
+        notify "Up to date ✨" "gimlet has no updates."
+    fi
+    refresh
+}
+
 # Checks each part of the setup and says how to fix what is missing.
 doctor() {
     local code plugins failed=0
@@ -491,5 +509,6 @@ case ${1:-} in
     ssh-config) write_ssh_config "" ;;
     doctor) doctor ;;
     update) update ;;
-    *) sed -n '2,15s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
+    check-update) check_update ;;
+    *) sed -n '2,16s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
 esac
