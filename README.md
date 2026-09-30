@@ -25,7 +25,8 @@ The installer:
 2. asks for your GenomeDK username and Slurm account and writes `~/.config/gimlet/settings`,
 3. adds `Include ~/.config/gimlet/ssh_config` to the top of `~/.ssh/config` (backup in `~/.ssh/config.before-gimlet`),
 4. puts the menu bar plugin in SwiftBar's plugin folder (`~/SwiftBar` unless you already have one),
-5. adds SwiftBar to your login items and starts it.
+5. adds SwiftBar to your login items and starts it,
+6. sends a test notification, so macOS asks whether SwiftBar may send notifications. Allow it: gimlet uses notifications to say when a job starts, is about to hit its time limit, or ends. If you missed the prompt, turn them on in System Settings → Notifications → SwiftBar.
 
 To do it by hand: install SwiftBar, copy `settings.example` to `~/.config/gimlet/settings` and fill it in, run `./gimlet ssh-config`, add the Include line to the top of `~/.ssh/config`, and put a plugin file called `gimlet.2m.sh` in SwiftBar's plugin folder containing `exec /path/to/gimlet menu`.
 

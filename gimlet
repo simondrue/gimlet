@@ -52,14 +52,20 @@ while IFS='=' read -r key value; do
     printf -v "$key" '%s' "$value"
 done < "$SETTINGS"
 
+# Sent through SwiftBar, so the notification shows SwiftBar's icon instead of Script Editor's.
 notify() {
-    osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title "gimlet" subtitle (item 1 of argv)' -e 'end run' "$1" "$2"
+    open -g "swiftbar://notify?plugin=gimlet&title=gimlet&subtitle=$(urlencode "$1")&body=$(urlencode "$2")"
+}
+
+# Percent-encodes every byte.
+urlencode() {
+    printf '%s' "$1" | xxd -p | tr -d '\n' | sed 's/../%&/g'
 }
 
 # Menu actions run without a terminal, so errors also go to a notification.
 die() {
     echo "gimlet: $*" >&2
-    [ -t 2 ] || notify "Error" "$*"
+    [ -t 2 ] || notify "Error ⚠️" "$*"
     exit 1
 }
 
@@ -183,18 +189,19 @@ notify_changes() {
         [ -n "$name" ] || continue
         read -r _ old warned _ <<< "$(grep "^$id " "$STATE" 2>/dev/null)"
         warned=${warned:-0}
-        if [ "$old" = PENDING ] && [ "$state" = RUNNING ]; then
+        # Not only PENDING before: a job that starts at once is never seen pending.
+        if [ "$old" != RUNNING ] && [ "$state" = RUNNING ]; then
             notify "$name is poured 🍸" "On node $node. Open it from the gimlet menu."
         fi
         if [ "$state" = RUNNING ] && [ "$warned" = 0 ] && [ "$(seconds "$left")" -lt 900 ]; then
-            notify "Last call: $name ends in $(pretty "$left")" "Save your work, the job reaches its time limit soon."
+            notify "Last call: $name ends in $(pretty "$left") ⏰" "Save your work, the job reaches its time limit soon."
             warned=1
         fi
         new="$new$id $state $warned $name"$'\n'
     done <<< "$1"
     while read -r id old warned name; do
         [ "$old" = RUNNING ] && [ -n "$name" ] && ! grep -q "^$id " <<< "$new" \
-            && notify "$name: tab closed" "$(end_reason "$id") Cheers!"
+            && notify "$name: tab closed 🧾" "$(end_reason "$id") Cheers!"
     done < <(cat "$STATE" 2>/dev/null)
     printf '%s' "$new" > "$STATE"
 }
@@ -434,7 +441,7 @@ proxy() {
 update() {
     local out
     out=$(git -C "$HERE" pull -q --ff-only 2>&1) || die "could not update: $out"
-    notify "Updated" "gimlet is up to date."
+    notify "Updated ✨" "gimlet is up to date."
     refresh
 }
 

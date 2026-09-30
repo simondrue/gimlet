@@ -62,4 +62,9 @@ osascript -e 'on run argv' -e 'tell application "System Events" to if not (exist
     || echo "Could not add SwiftBar to login items; turn on 'Launch at login' in SwiftBar's preferences."
 open "$swiftbar"
 
+# A first notification makes macOS ask whether SwiftBar may send notifications. SwiftBar needs a moment to load the plugin.
+sleep 3
+open -g "swiftbar://notify?plugin=gimlet&title=gimlet&subtitle=Installed%20%F0%9F%8D%B8&body=Notifications%20work."
+echo "If macOS asks, allow notifications from SwiftBar; gimlet uses them to say when a job starts or ends."
+
 echo "Done. Click the gimlet icon in the menu bar and choose 'Log in to GenomeDK…'."
