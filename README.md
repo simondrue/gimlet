@@ -26,7 +26,7 @@ The installer:
 3. adds `Include ~/.config/gimlet/ssh_config` to the top of `~/.ssh/config` (backup in `~/.ssh/config.before-gimlet`),
 4. puts the menu bar plugin in SwiftBar's plugin folder (`~/SwiftBar` unless you already have one),
 5. adds SwiftBar to your login items and starts it,
-6. sends a test notification, so macOS asks whether SwiftBar may send notifications. Allow it: gimlet uses notifications to say when a job starts, is about to hit its time limit, or ends. If you missed the prompt, turn them on in System Settings → Notifications → SwiftBar.
+6. sends a test notification, so macOS asks whether SwiftBar may send notifications. Allow it: gimlet uses notifications to say when a job starts or is about to hit its time limit. If you missed the prompt, turn them on in System Settings → Notifications → SwiftBar.
 
 To do it by hand: install SwiftBar, copy `settings.example` to `~/.config/gimlet/settings` and fill it in, run `./gimlet ssh-config`, add the Include line to the top of `~/.ssh/config`, and put a plugin file called `gimlet.2m.sh` in SwiftBar's plugin folder containing `exec /path/to/gimlet menu`.
 
@@ -37,7 +37,7 @@ If you move the repo, run `install.sh` again. If something doesn't work, `./giml
 1. Click the icon → **Log in to GenomeDK…**. A Terminal window opens. Type your 2FA code if asked. The login is shared by the menu and all VS Code windows until your network changes.
 2. **Start new job** → shot / double / pitcher. The icon turns orange while the job waits, and a notification tells you when it runs.
 3. On the job → **Open VS Code**. A VS Code window opens on the node; use File → Open Folder to browse GenomeDK. Or in VS Code, pick `gimlet-1` from Remote-SSH's host list.
-4. Close your VS Code windows when done. The job ends by itself 60 minutes later, or stop it from the menu. **Stop all jobs?** stops every job; confirm in its submenu. A notification says why a job ended (idle, time limit, out of memory, stopped).
+4. Close your VS Code windows when done. The job ends by itself 60 minutes later, or stop it from the menu. **Stop all jobs?** stops every job; confirm in its submenu.
 
 Work still running on the node when the job ends (including tmux) is killed. Use `sbatch` for long runs.
 

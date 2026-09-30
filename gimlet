@@ -22,7 +22,7 @@ CONF_DIR="$HOME/.config/gimlet"
 SETTINGS="$CONF_DIR/settings"
 SSH_CONFIG="$CONF_DIR/ssh_config"
 SOCKET="$CONF_DIR/login.sock"
-LAST_SEEN="$CONF_DIR/state"   # "jobid state warned name" per job, to notice changes between refreshes
+LAST_SEEN="$CONF_DIR/state"   # "jobid state warned" per job, to notice changes between refreshes
 STARTING="$CONF_DIR/starting" # preset of a start in progress, shown in the menu until the job is submitted
 STOPPING="$CONF_DIR/stopping" # one file per job being stopped, shown in the menu until the stop is done
 JOBS="$CONF_DIR/jobs"         # the job list from the last menu refresh
@@ -210,26 +210,7 @@ pretty() {
     else echo "$((s / 3600))h$((s % 3600 / 60))m"; fi
 }
 
-# Why a job ended, from Slurm's accounting. A job that ends itself when idle counts as completed.
-# Accounting can lag behind the queue, so it asks again for up to a minute.
-end_reason() {
-    local state
-    for _ in 1 2 3 4 5 6; do
-        state=$(remote "sacct -j $1 -X -n -P -o State" < /dev/null 2>/dev/null)
-        case $state in ""|PENDING*|RUNNING*|COMPLETING*) sleep 10 ;; *) break ;; esac
-    done
-    # The idle limit is not the setting's: it may have changed since the job started.
-    case $state in
-        COMPLETED*) echo "No VS Code was connected for its idle limit." ;;
-        TIMEOUT*) echo "It reached its time limit." ;;
-        OUT_OF_MEMORY*) echo "It ran out of memory. Try a bigger job size." ;;
-        CANCELLED*) echo "It was stopped." ;;
-        NODE_FAIL*) echo "Its node failed." ;;
-        *) echo "The job has ended." ;;
-    esac
-}
-
-# Notifies when a job leaves the queue, nears its time limit or ends.
+# Notifies when a job leaves the queue or nears its time limit.
 notify_changes() {
     local name id state node left rest old warned new=""
     while IFS='|' read -r name id state node left rest; do
@@ -244,14 +225,8 @@ notify_changes() {
             notify "Last call: $name ends in $(pretty "$left") ⏰" "Save your work, the job reaches its time limit soon."
             warned=1
         fi
-        new="$new$id $state $warned $name"$'\n'
+        new="$new$id $state $warned"$'\n'
     done <<< "$1"
-    # Any job that had started, not only one seen RUNNING: a refresh can catch it COMPLETING.
-    # In the background, as the reason can take a minute to come.
-    while read -r id old warned name; do
-        [ "$old" != PENDING ] && [ -n "$name" ] && ! grep -q "^$id " <<< "$new" \
-            && { notify "$name: tab closed 🧾" "$(end_reason "$id") Cheers!" > /dev/null 2>&1 & }
-    done < <(cat "$LAST_SEEN" 2>/dev/null)
     printf '%s' "$new" > "$LAST_SEEN"
 }
 

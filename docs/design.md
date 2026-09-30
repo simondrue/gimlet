@@ -91,7 +91,6 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settingsâ€
 
 - When a waiting job starts running.
 - About 15 min before a job's time limit.
-- When a job ends, with the reason from `sacct`: idle (the job exits by itself, so Slurm calls it completed), time limit, out of memory, stopped, or node failure.
 
 ## SSH
 
