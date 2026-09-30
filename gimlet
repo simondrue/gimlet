@@ -3,12 +3,15 @@
 #
 #   gimlet start <preset>      submit a new job (shot, double, pitcher, ...)
 #   gimlet stop <jobid>        cancel a job
+#   gimlet stop-all            cancel all your gimlet jobs
 #   gimlet open <host> [dir]   open VS Code on gimlet-N (an empty window if no dir is given)
 #   gimlet login               log in to GenomeDK (2FA) and keep the connection open
 #   gimlet list                show your gimlet jobs
 #   gimlet menu                SwiftBar menu output
 #   gimlet proxy <host>        ssh ProxyCommand for gimlet-N (used by the generated ssh config)
 #   gimlet ssh-config          rewrite the generated ssh config from the settings
+#   gimlet doctor              check the setup
+#   gimlet update              update gimlet from its git remote
 
 set -u -o pipefail
 
@@ -160,6 +163,18 @@ pretty() {
     if [ "$s" -ge 3600 ]; then echo "$((s / 3600))h$((s % 3600 / 60))m"; else echo "$((s / 60))m"; fi
 }
 
+# Why a job ended, from Slurm's accounting. A job that ends itself when idle counts as completed.
+end_reason() {
+    case $(remote "sacct -j $1 -X -n -P -o State" < /dev/null 2>/dev/null) in
+        COMPLETED*) echo "No VS Code was connected for $IDLE_MINUTES minutes." ;;
+        TIMEOUT*) echo "It reached its time limit." ;;
+        OUT_OF_MEMORY*) echo "It ran out of memory. Try a bigger job size." ;;
+        CANCELLED*) echo "It was stopped." ;;
+        NODE_FAIL*) echo "Its node failed." ;;
+        *) echo "The job has ended." ;;
+    esac
+}
+
 # Notifies when a job leaves the queue, nears its time limit or ends.
 notify_changes() {
     local name id state node left rest old warned new=""
@@ -178,7 +193,7 @@ notify_changes() {
     done <<< "$1"
     while read -r id old warned name; do
         [ "$old" = RUNNING ] && [ -n "$name" ] && ! grep -q "^$id " <<< "$new" \
-            && notify "$name: tab closed" "The job has ended. Cheers!"
+            && notify "$name: tab closed" "$(end_reason "$id") Cheers!"
     done < <(cat "$STATE" 2>/dev/null)
     printf '%s' "$new" > "$STATE"
 }
@@ -187,12 +202,25 @@ footer() {
     echo "---"
     echo "Settings… | bash=/usr/bin/open param1=-t param2=\"$SETTINGS\" terminal=false"
     echo "Refresh | refresh=true"
+    update_line
     local quotes=("Shaken, not sbatch'd" "Idle nodes are empty glasses"
         "The login node is the designated driver" "Please compute responsibly" "Don't drink and srun"
         "May the cores be with you" "There's no place like ~")
     echo "---"
     # Each quote gets an equal share of the hour.
     echo "${quotes[10#$(date +%M) * ${#quotes[@]} / 60]} | size=11 color=$GREY"
+}
+
+# Offers an update when the repo's upstream branch has new commits. Fetches at most daily, in the background.
+update_line() {
+    local behind
+    git -C "$HERE" rev-parse -q --verify '@{u}' > /dev/null 2>&1 || return
+    if [ -z "$(find "$CONF_DIR/update-check" -mtime -1 2>/dev/null)" ]; then
+        touch "$CONF_DIR/update-check"
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" git -C "$HERE" fetch -q < /dev/null > /dev/null 2>&1 &
+    fi
+    behind=$(git -C "$HERE" rev-list --count 'HEAD..@{u}' 2>/dev/null)
+    [ "${behind:-0}" -gt 0 ] && echo "Update gimlet ($behind new) | bash=\"$SELF\" param1=update terminal=false"
 }
 
 # A job's submenu detail line: grey label, value aligned in a monospace column.
@@ -271,6 +299,7 @@ menu() {
         esac
     done <<< "$jobs"
     [ -n "$starting" ] && echo "new $starting job · Starting… | refresh=true"
+    [ "$(grep -c . <<< "$jobs")" -gt 1 ] && echo "Stop all jobs | bash=\"$SELF\" param1=stop-all terminal=false"
     [ -n "$jobs$starting" ] && echo "---"
 
     echo "Start new job | refresh=true"
@@ -333,6 +362,17 @@ stop() {
     refresh
 }
 
+stop_all() {
+    local ids out
+    out=$(fetch) || die "GenomeDK is not answering"
+    ids=$(awk -F'|' '{ print $2 }' <<< "$out" | paste -sd' ' -)
+    [ -n "$ids" ] || die "you have no gimlet jobs"
+    osascript -e 'on run argv' -e 'display dialog "Stop all " & (item 1 of argv) & " gimlet jobs?" buttons {"Cancel", "Stop all"} default button "Cancel" with icon caution' -e 'end run' \
+        "$(wc -w <<< "$ids" | tr -d ' ')" > /dev/null || exit 0
+    out=$(remote "scancel -u $USERNAME $ids && rm -f$(printf ' ~/.gimlet/%s' $ids)" 2>&1) || die "could not stop jobs: $out"
+    refresh
+}
+
 open_vscode() {
     local host=${1:-} dir=${2:-} code
     [ -n "$host" ] || die "usage: gimlet open <gimlet-N> [folder]"
@@ -363,6 +403,42 @@ proxy() {
     exec ssh -F "$SSH_CONFIG" -o BatchMode=yes -W "$node:22" gimlet-login
 }
 
+update() {
+    local out
+    out=$(git -C "$HERE" pull -q --ff-only 2>&1) || die "could not update: $out"
+    notify "Updated" "gimlet is up to date."
+    refresh
+}
+
+# Checks each part of the setup and says how to fix what is missing.
+doctor() {
+    local code plugins failed=0
+    check() {
+        local label=$1 hint=$2
+        shift 2
+        if "$@" > /dev/null 2>&1; then echo "✓ $label"; else echo "✗ $label: $hint"; failed=1; fi
+    }
+    code=$(command -v code || echo "$CODE")
+    plugins=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null)
+    plugins=${plugins/#\~/$HOME}
+
+    check "username and account set" "fill in USERNAME and ACCOUNT in $SETTINGS" test -n "$USERNAME" -a -n "$ACCOUNT"
+    check "ssh key $IDENTITY_FILE" "create one with ssh-keygen, or set IDENTITY_FILE in $SETTINGS" test -f "${IDENTITY_FILE/#\~/$HOME}"
+    # ssh reads an Include after a Host line as part of that host.
+    check "gimlet's ssh config included" "put 'Include $SSH_CONFIG' at the top of ~/.ssh/config (install.sh does this)" \
+        awk -v inc="Include $SSH_CONFIG" '$0 == inc { found = 1; exit } tolower($1) ~ /^(host|match)$/ { exit } END { exit !found }' ~/.ssh/config
+    check "VS Code" "install Visual Studio Code in /Applications" test -x "$code"
+    check "VS Code Remote-SSH extension" "install 'Remote - SSH' in VS Code" grep -qix ms-vscode-remote.remote-ssh <("$code" --list-extensions 2>/dev/null)
+    check "menu bar plugin" "run install.sh" grep -qF "$SELF" "$plugins/gimlet.2m.sh"
+    check "SwiftBar running" "open SwiftBar" pgrep -x SwiftBar
+    check "logged in to GenomeDK" "run: gimlet login" logged_in
+    if logged_in; then
+        check "Slurm account $ACCOUNT" "not one of your accounts; fix ACCOUNT in $SETTINGS" \
+            grep -qix "$ACCOUNT" <(remote "sacctmgr -n -P show assoc where user=$USERNAME format=account")
+    fi
+    return $failed
+}
+
 list() {
     logged_in || die "not logged in to GenomeDK, run: gimlet login"
     fetch | column -t -s '|'
@@ -371,11 +447,14 @@ list() {
 case ${1:-} in
     start) start "${2:-}" ;;
     stop) stop "${2:-}" "${3:-}" ;;
+    stop-all) stop_all ;;
     open) open_vscode "${2:-}" "${3:-}" ;;
     login) login ;;
     list) list ;;
     menu) menu ;;
     proxy) proxy "${2:-}" ;;
     ssh-config) write_ssh_config "" ;;
-    *) sed -n '2,12s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
+    doctor) doctor ;;
+    update) update ;;
+    *) sed -n '2,15s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
 esac

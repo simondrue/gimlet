@@ -38,9 +38,11 @@ gimlet-2 · ⏳ Waiting
    ├ Cancel
    ├ ───
    └ Preset: pitcher      (small grey details: Cores, Mem, Waiting: <reason>, Job ID)
+Stop all jobs             (only with 2+ jobs; always asks first)
 ───
 Start new job ▸  shot / double / pitcher
 Settings…
+Update gimlet             (only when the git remote has new commits)
 Log in to GenomeDK        (only when the connection is down)
 ```
 
@@ -76,6 +78,7 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 
 - When a waiting job starts running.
 - About 15 min before a job's time limit.
+- When a job ends, with the reason from `sacct`: idle (the job exits by itself, so Slurm calls it completed), time limit, out of memory, stopped, or node failure.
 
 ## SSH
 

@@ -29,20 +29,22 @@ The installer:
 
 To do it by hand: install SwiftBar, copy `settings.example` to `~/.config/gimlet/settings` and fill it in, run `./gimlet ssh-config`, add the Include line to the top of `~/.ssh/config`, and put a plugin file called `gimlet.2m.sh` in SwiftBar's plugin folder containing `exec /path/to/gimlet menu`.
 
-If you move the repo, run `install.sh` again.
+If you move the repo, run `install.sh` again. If something doesn't work, `./gimlet doctor` checks each part of the setup. To remove gimlet, run `uninstall.sh`.
 
 ## Use
 
 1. Click the icon → **Log in to GenomeDK…**. A Terminal window opens. Type your 2FA code if asked. The login is shared by the menu and all VS Code windows until your network changes.
 2. **Start new job** → shot / double / pitcher. The icon turns orange while the job waits, and a notification tells you when it runs.
 3. On the job → **Open VS Code**. A VS Code window opens on the node; use File → Open Folder to browse GenomeDK. Or in VS Code, pick `gimlet-1` from Remote-SSH's host list.
-4. Close your VS Code windows when done. The job ends by itself 60 minutes later, or stop it from the menu.
+4. Close your VS Code windows when done. The job ends by itself 60 minutes later, or stop it from the menu. **Stop all jobs** appears when you have more than one. A notification says why a job ended (idle, time limit, out of memory, stopped).
 
 Work still running on the node when the job ends (including tmux) is killed. Use `sbatch` for long runs.
 
 **Settings…** opens `~/.config/gimlet/settings` in a text editor, where you can change presets, time limit, idle minutes, account and partition.
 
-The same commands work in a terminal: `./gimlet list`, `./gimlet start shot`, `./gimlet open gimlet-1 /some/folder`, `./gimlet stop <jobid>`.
+The same commands work in a terminal: `./gimlet list`, `./gimlet start shot`, `./gimlet open gimlet-1 /some/folder`, `./gimlet stop <jobid>`, `./gimlet stop-all`, `./gimlet doctor`.
+
+When the repo tracks a git remote, the menu checks it once a day and shows **Update gimlet** when there are new commits.
 
 ## How it works
 
