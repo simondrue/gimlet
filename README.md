@@ -50,6 +50,6 @@ The same commands work in a terminal: `./gimlet list`, `./gimlet start small`, `
 |---|---|
 | `gimlet` | All logic: menu output, start/stop, opening VS Code, and the ssh helper that finds a slot's node. |
 | `gimlet-job.sh` | The Slurm job. Every minute it checks for your ssh connections on its node; after `IDLE_MINUTES` without one, it exits. It reports connected/idle in its Slurm job comment, which the menu reads with `squeue`. Nothing is stored on GenomeDK. |
-| `~/.config/gimlet/ssh_config` | Generated. `gimlet-login` keeps one shared connection to the login node; `gimlet-*` connects to a job's node through it. |
+| `~/.config/gimlet/ssh_config` | Generated. `gimlet-login` keeps one shared connection to the login node; `gimlet-*` connects to a job's node through it. Running jobs are also listed by name, so VS Code's host list shows them. |
 
 Jobs appear in `squeue` as `gimlet-1`, `gimlet-2`, … with a comment like `small idle 5`. Job output is discarded.

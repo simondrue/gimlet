@@ -59,8 +59,13 @@ pill() {
     echo "image=$images"
 }
 
+# Takes the running job names. VS Code's host list skips wildcard entries,
+# so each running job also gets its own (empty) Host line.
+# The file is only replaced when its content changes.
 write_ssh_config() {
-    cat > "$SSH_CONFIG" <<EOF
+    local host
+    {
+    cat <<EOF
 # Written by gimlet from $SETTINGS. Edits here are overwritten.
 
 Host gimlet-login
@@ -82,6 +87,9 @@ Host gimlet-* !gimlet-login
     UserKnownHostsFile /dev/null
     LogLevel ERROR
 EOF
+    for host in $1; do printf '\nHost %s\n' "$host"; done
+    } > "$SSH_CONFIG.tmp"
+    if cmp -s "$SSH_CONFIG.tmp" "$SSH_CONFIG"; then rm "$SSH_CONFIG.tmp"; else mv "$SSH_CONFIG.tmp" "$SSH_CONFIG"; fi
 }
 
 logged_in() {
@@ -148,7 +156,7 @@ footer() {
 
 menu() {
     local jobs running pending name id state node left preset reason conn echo_stop p n c m
-    [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config
+    [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
 
     if ! logged_in; then
         echo "| $(pill "log in" $RED)"
@@ -165,6 +173,7 @@ menu() {
         return
     fi
     notify_changes "$jobs"
+    write_ssh_config "$(awk -F'|' '$3 == "RUNNING" { print $1 }' <<< "$jobs")"
 
     running=$(grep -c '^[^|]*|[^|]*|RUNNING|' <<< "$jobs")
     pending=$(grep -c '^[^|]*|[^|]*|PENDING|' <<< "$jobs")
@@ -290,6 +299,6 @@ case ${1:-} in
     list) list ;;
     menu) menu ;;
     proxy) proxy "${2:-}" ;;
-    ssh-config) write_ssh_config ;;
+    ssh-config) write_ssh_config "" ;;
     *) sed -n '2,12s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
 esac

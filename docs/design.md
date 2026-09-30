@@ -76,7 +76,8 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settingsâ€
 ## SSH
 
 - gimlet owns one file (`~/.config/gimlet/ssh_config`), pulled in by an `Include` line in `~/.ssh/config`. The user's own config is otherwise untouched.
-- That file holds a fixed `Host gimlet-*` entry. A small helper (a ProxyCommand) looks up the slot's node through `squeue` when you connect and **refuses** if that slot has no running job. The file only changes when the settings do.
+- That file holds a `Host gimlet-*` entry. A small helper (a ProxyCommand) looks up the slot's node through `squeue` when you connect and **refuses** if that slot has no running job.
+- VS Code's host list skips wildcard entries, so each menu refresh also writes an empty `Host gimlet-N` line per running job. The file is only rewritten when that list or the settings change.
 - One shared login connection (ControlMaster/ControlPersist) through the login node is used by the plugin's status checks and by all VS Code windows.
 - After a network change the shared connection dies and GenomeDK asks for 2FA again. The icon turns red, and **Log in to GenomeDK** opens Terminal so the code can be typed once. Status checks never prompt.
 
