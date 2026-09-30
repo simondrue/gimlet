@@ -161,6 +161,31 @@ REMOTE
 # Names for the job list's fields in awk, e.g. awk -F'|' "$JOB_FIELDS"' state == "RUNNING" { print name }'
 JOB_FIELDS='{ name = $1; id = $2; state = $3; node = $4 }'
 
+# Slurm states by what the menu shows. A job in any other state (COMPLETING, ...) is ending.
+WAITING_STATES='PENDING|REQUEUED|REQUEUE_HOLD|REQUEUE_FED|RESV_DEL_HOLD|SPECIAL_EXIT'
+RUNNING_STATES='RUNNING|RESIZING'
+PAUSED_STATES='SUSPENDED|STOPPED'
+CANCELLABLE="$WAITING_STATES|CONFIGURING|$RUNNING_STATES|$PAUSED_STATES"
+
+# Takes a job's state and connection; prints its menu group:
+# waiting, open, idle, paused or ending.
+group() {
+    local state=$1 conn=$2
+    if [[ $state =~ ^($WAITING_STATES)$ ]]; then echo waiting
+    elif [[ $state =~ ^($RUNNING_STATES)$ ]]; then
+        # Waiting until the job's first status note.
+        case $conn in connected) echo open ;; idle*) echo idle ;; *) echo waiting ;; esac
+    elif [ "$state" = CONFIGURING ]; then echo waiting
+    elif [[ $state =~ ^($PAUSED_STATES)$ ]]; then echo paused
+    else echo ending
+    fi
+}
+
+# Keeps the jobs on stdin that can still be cancelled.
+cancellable() {
+    awk -F'|' -v ok="^($CANCELLABLE)\$" "$JOB_FIELDS"' state ~ ok'
+}
+
 # Takes job ids and drops those jobs from the job list on stdin.
 drop_jobs() {
     awk -F'|' -v s=" $* " "$JOB_FIELDS"' !index(s, " " id " ")'
@@ -292,7 +317,7 @@ detail() {
 }
 
 menu() {
-    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem p n c m wn wc wm
+    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem p n c m wn wc wm g
     # One menu run at a time, so two quick refreshes don't both see a change and notify twice.
     one_at_a_time menu menu
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
@@ -316,10 +341,13 @@ menu() {
         return
     fi
 
-    # Jobs being stopped are not counted.
-    active=$(drop_jobs $stopping <<< "$jobs")
-    running=$(awk -F'|' "$JOB_FIELDS"' state == "RUNNING" { n++ } END { print n + 0 }' <<< "$active")
-    pending=$(awk -F'|' "$JOB_FIELDS"' state == "PENDING" { n++ } END { print n + 0 }' <<< "$active")
+    # Jobs being stopped or ending are not counted. Waiting ones show as +N.
+    active=$(drop_jobs $stopping <<< "$jobs" | cancellable)
+    running=0 pending=0
+    while IFS='|' read -r name id state node left preset reason conn cpus mem; do
+        [ -n "$name" ] || continue
+        if [ "$(group "$state" "$conn")" = waiting ]; then pending=$((pending + 1)); else running=$((running + 1)); fi
+    done <<< "$active"
     [ -n "$starting" ] && pending=$((pending + 1))
     if [ "$pending" -gt 0 ]; then
         echo "| $(pill "$running +$pending" $ORANGE)"
@@ -334,31 +362,29 @@ menu() {
     # action-less submenu lines when their text changes (swiftbar/SwiftBar#521).
     while IFS='|' read -r name id state node left preset reason conn cpus mem; do
         [ -n "$name" ] || continue
-        case " $stopping " in *" $id "*) state=STOPPING ;; esac
-        case $state in
-            RUNNING)
-                case $conn in
-                    connected) echo "$name · 🔌 Connected | refresh=true" ;;
-                    idle*) echo "$name · 💤 Idle ${conn#idle }m | refresh=true" ;;
-                    *) echo "$name · Starting… | refresh=true" ;;
-                esac
+        g=$(group "$state" "$conn")
+        case " $stopping " in *" $id "*) g=ending ;; esac
+        case $g in
+            open|idle)
+                if [ "$g" = open ]; then echo "$name · 🍸 Sipping… | refresh=true"
+                else echo "$name · 💤 Unused tab (${conn#idle }m) | refresh=true"; fi
                 echo "--Open VS Code | bash=\"$SELF\" param1=open param2=$name terminal=false"
                 echo "--Stop job | bash=\"$SELF\" param1=stop param2=$id param3=${conn%% *} terminal=false"
                 echo "-----"
                 detail Preset "$preset"; detail Cores "$cpus"; detail Mem "$mem"; detail Node "$node"; detail "Time left" "$left"; detail "Job ID" "$id"
                 ;;
-            PENDING)
-                echo "$name · ⏳ Waiting | refresh=true"
+            waiting|paused)
+                if [ "$g" = waiting ]; then echo "$name · ⏳ Waiting | refresh=true"
+                else echo "$name · ⏸ Paused | refresh=true"; fi
                 echo "--Cancel | bash=\"$SELF\" param1=stop param2=$id terminal=false"
                 echo "-----"
-                detail Preset "$preset"; detail Cores "$cpus"; detail Mem "$mem"; detail Waiting "$reason"; detail "Job ID" "$id"
+                detail Preset "$preset"; detail Cores "$cpus"; detail Mem "$mem"
+                # A job still in the queue has no node yet, only Slurm's reason for the wait.
+                if [ -n "$node" ]; then detail Node "$node"; else detail Waiting "$reason"; fi
+                detail "Job ID" "$id"
                 ;;
-            STOPPING)
-                echo "$name · Stopping… | color=$GREY"
-                ;;
-            *)
-                echo "$name · $(tr '[:upper:]' '[:lower:]' <<< "$state") | refresh=true"
-                echo "--Cancel | bash=\"$SELF\" param1=stop param2=$id terminal=false"
+            ending)
+                echo "$name · 🧾 Closing tab… | color=$GREY"
                 ;;
         esac
     done <<< "$jobs"
@@ -366,7 +392,7 @@ menu() {
         # The slot submit_script will pick: the lowest free one in the last job list.
         n=1
         while grep -q "^gimlet-$n|" <<< "$jobs"; do n=$((n + 1)); done
-        echo "gimlet-$n · ⏳ Starting… | refresh=true"
+        echo "gimlet-$n · ⏳ Waiting | refresh=true"
     fi
     [ -n "$jobs$starting" ] && echo "---"
     # The submenu is the confirmation.
@@ -378,7 +404,7 @@ menu() {
         echo "---"
     fi
 
-    # Greyed out (no action) while a job is starting or waiting: it has no node yet, so a new
+    # Greyed out (no action) while a job is waiting: it may have no node yet, so a new
     # job can't be kept off it. start refuses too, in case this menu is out of date.
     if [ "$pending" -gt 0 ]; then
         echo "Start new job (after the waiting one starts)"
@@ -406,12 +432,12 @@ set -o pipefail
 user=$1 args=$2
 jobs=$(squeue -u "$user" -h -o '%j|%T|%N|%u' | awk -F'|' -v u="$user" '$4 == u && $1 ~ /^gimlet-[0-9]+$/') || exit 1
 # A waiting job has no node yet, so --exclude can't keep a new job off its node.
-waiting=$(awk -F'|' '$2 == "PENDING" { print $1; exit }' <<< "$jobs")
+waiting=$(awk -F'|' '$3 == "" { print $1; exit }' <<< "$jobs")
 [ -z "$waiting" ] || { echo "$waiting is still waiting for a node; start another once it runs." >&2; exit 1; }
 slot=1
 while grep -q "^gimlet-$slot|" <<< "$jobs"; do slot=$((slot + 1)); done
 # Keep jobs on separate nodes, so each job's idle check only sees its own connections.
-exclude=$(awk -F'|' '$2 == "RUNNING" { print $3 }' <<< "$jobs" | paste -sd, -)
+exclude=$(awk -F'|' '$3 != "" { print $3 }' <<< "$jobs" | paste -sd, -)
 id=$(sbatch $args --job-name=gimlet-$slot ${exclude:+--exclude=$exclude} <<'GIMLET_JOB'
 REMOTE
     cat "$HERE/gimlet-job.sh"
@@ -471,8 +497,8 @@ stop() {
 
 stop_all() {
     local ids
-    # Jobs already being stopped are left out.
-    ids=$(drop_jobs $(stopping_ids) 2>/dev/null < "$JOBS" | awk -F'|' "$JOB_FIELDS"' { print id }' | paste -sd' ' -)
+    # Jobs already being stopped or ending are left out.
+    ids=$(drop_jobs $(stopping_ids) 2>/dev/null < "$JOBS" | cancellable | awk -F'|' "$JOB_FIELDS"' { print id }' | paste -sd' ' -)
     [ -n "$ids" ] || die "you have no gimlet jobs"
     cancel $ids
 }

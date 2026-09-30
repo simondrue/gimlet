@@ -17,7 +17,7 @@ gimlet is a macOS menu bar tool that starts, shows and stops these jobs, and let
 
 ## Menu bar icon
 
-A pill with a coloured dot and the number of running jobs, plus `+N` for jobs waiting in the queue (drawn by `gimlet-pill.js`).
+A pill with a coloured dot and the number of running jobs, plus `+N` for jobs waiting (drawn by `gimlet-pill.js`).
 
 | Colour | Meaning |
 |---|---|
@@ -29,7 +29,7 @@ A pill with a coloured dot and the number of running jobs, plus `+N` for jobs wa
 ## Menu
 
 ```
-gimlet-1 · 🔌 Connected
+gimlet-1 · 🍸 Sipping…
    ├ Open VS Code
    ├ Stop job
    ├ ───
@@ -41,13 +41,24 @@ gimlet-2 · ⏳ Waiting
 ───
 Stop all jobs? ▸  Yes, stop N jobs   (whenever there are jobs; the submenu is the confirmation)
 ───
-Start new job ▸  shot / double / pitcher   (greyed out while a job is starting or waiting)
+Start new job ▸  shot / double / pitcher   (greyed out while a job is waiting)
 Settings…
 Refresh
 Update gimlet             (when the git remote has new commits; else "gimlet is up to date", click to check now)
 Log in to GenomeDK        (only when the connection is down)
 ```
 
+- Job lines, by Slurm state:
+
+  | Line | Slurm states | Actions |
+  |---|---|---|
+  | ⏳ Waiting | PENDING, REQUEUED, REQUEUE_HOLD, REQUEUE_FED, RESV_DEL_HOLD, SPECIAL_EXIT, CONFIGURING, RUNNING before the job's first status note; also gimlet's start in progress, which has no job to cancel yet | Cancel |
+  | 🍸 Sipping… | RUNNING or RESIZING, VS Code connected | Open VS Code, Stop job |
+  | 💤 Unused tab (Nm) | RUNNING or RESIZING, nothing connected | Open VS Code, Stop job |
+  | ⏸ Paused | SUSPENDED, STOPPED | Cancel |
+  | 🧾 Closing tab… (grey) | any other state (COMPLETING, ...), or gimlet's stop in progress | none |
+
+  Waiting counts as `+N` in the icon; Closing tab is not counted.
 - **Stop job** asks for confirmation only if a VS Code window is connected.
 - **Open VS Code** runs `code --new-window --remote ssh-remote+gimlet-N`: an empty window on the node, where File → Open Folder browses GenomeDK. (Favourite and recent folder lists were dropped: browsing is easier than remembering paths, and VS Code's own recent list covers reopening.)
 
@@ -100,6 +111,6 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 
 - Watchdog: counts user-owned `sshd: user@…` / `sshd-session: user@…` processes on the node once a minute, and writes `connected` / `idle N` to `~/.gimlet/<jobid>` on GenomeDK (only when it changes; the file is removed when the job ends). The menu reads these files in the same ssh call as `squeue` and removes any left by jobs that are gone. Status needs no Slurm calls. Job output goes to `/dev/null`.
 - The menu refreshes every 2 minutes (plugin file `gimlet.2m.sh`). Waiting for a new job to start asks Slurm nothing: `gimlet start` creates the job's status file empty right after `sbatch`, and a background ssh command reads it every 5 s (for up to an hour) until the job's first write, then redraws the menu. The file must exist beforehand: the login node sees a new file on the shared home up to ~45 s late, but a write into an existing file within a second when it is reopened (measured). No refresh on open (`swiftbar.refreshOnOpen`): SwiftBar waits for the plugin before showing the menu.
-- Starting a job shows `gimlet-N · ⏳ Starting…` (the slot it will get: the lowest free one in the last job list) within a second: `gimlet start` writes a local note and redraws, and that redraw reuses the last job list instead of asking GenomeDK. The line stays until the job runs (wait_start redraws) or the next refresh; only a failed start redraws at once. Menu items that run start or stop don't also carry `refresh=true`, since those commands redraw by themselves.
+- Starting a job shows `gimlet-N · ⏳ Waiting` (the slot it will get: the lowest free one in the last job list) within a second: `gimlet start` writes a local note and redraws, and that redraw reuses the last job list instead of asking GenomeDK. The line stays until the job runs (wait_start redraws) or the next refresh; only a failed start redraws at once. Menu items that run start or stop don't also carry `refresh=true`, since those commands redraw by themselves.
 - Notifications go through SwiftBar's `swiftbar://notify` URL, so they show SwiftBar's icon (`osascript display notification` shows Script Editor's). SwiftBar needs notification permission in System Settings.
 - Status checks first test the shared connection (`ssh -O check`) and never open a new login, so a logged-out menu doesn't cause repeated failed logins.
