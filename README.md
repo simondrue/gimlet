@@ -1,4 +1,4 @@
-# gimlet
+# 🍸🪛 gimlet
 
 A Mac menu bar tool for running VS Code on GenomeDK compute nodes instead of the login node.
 
