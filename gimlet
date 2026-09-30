@@ -180,7 +180,9 @@ seconds() {
 pretty() {
     local s
     s=$(seconds "$1")
-    if [ "$s" -ge 3600 ]; then echo "$((s / 3600))h$((s % 3600 / 60))m"; else echo "$((s / 60))m"; fi
+    if [ "$s" -lt 3600 ]; then echo "$((s / 60))m"
+    elif [ "$((s % 3600 / 60))" = 0 ]; then echo "$((s / 3600))h"
+    else echo "$((s / 3600))h$((s % 3600 / 60))m"; fi
 }
 
 # Why a job ended, from Slurm's accounting. A job that ends itself when idle counts as completed.
@@ -290,7 +292,7 @@ detail() {
 }
 
 menu() {
-    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem p n c m
+    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem p n c m wn wc wm
     # One menu run at a time, so two quick refreshes don't both see a change and notify twice.
     one_at_a_time menu menu
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
@@ -366,8 +368,15 @@ menu() {
         while grep -q "^gimlet-$n|" <<< "$jobs"; do n=$((n + 1)); done
         echo "gimlet-$n · ⏳ Starting… | refresh=true"
     fi
-    [ "$(grep -c . <<< "$active")" -gt 1 ] && echo "Stop all jobs | bash=\"$SELF\" param1=stop-all terminal=false"
     [ -n "$jobs$starting" ] && echo "---"
+    # The submenu is the confirmation.
+    if [ -n "$active" ]; then
+        n=$(grep -c . <<< "$active")
+        echo "Stop all jobs? | refresh=true"
+        if [ "$n" = 1 ]; then n="1 job"; else n="$n jobs"; fi
+        echo "--Yes, stop $n | bash=\"$SELF\" param1=stop-all terminal=false"
+        echo "---"
+    fi
 
     # Greyed out (no action) while a job is starting or waiting: it has no node yet, so a new
     # job can't be kept off it. start refuses too, in case this menu is out of date.
@@ -375,9 +384,16 @@ menu() {
         echo "Start new job (after the waiting one starts)"
     else
         echo "Start new job | refresh=true"
+        # One line per size: its name, then its details in grey, in columns like a job's details.
+        wn=0 wc=0 wm=0
         for p in $PRESETS; do
             IFS=: read -r n c m <<< "$p"
-            echo "--$n ($c CPU, $m) | bash=\"$SELF\" param1=start param2=$n terminal=false"
+            [ "${#n}" -gt "$wn" ] && wn=${#n}; [ "${#c}" -gt "$wc" ] && wc=${#c}; [ "${#m}" -gt "$wm" ] && wm=${#m}
+        done
+        for p in $PRESETS; do
+            IFS=: read -r n c m <<< "$p"
+            printf -- '--%-*s  \e[90m%*s cores · %*s · %s\e[0m | ansi=true font=Menlo bash="%s" param1=start param2=%s terminal=false\n' \
+                "$wn" "$n" "$wc" "$c" "$wm" "$m" "$(pretty "$TIME")" "$SELF" "$n"
         done
     fi
     footer
@@ -458,8 +474,6 @@ stop_all() {
     # Jobs already being stopped are left out.
     ids=$(drop_jobs $(stopping_ids) 2>/dev/null < "$JOBS" | awk -F'|' "$JOB_FIELDS"' { print id }' | paste -sd' ' -)
     [ -n "$ids" ] || die "you have no gimlet jobs"
-    osascript -e 'on run argv' -e 'display dialog "Stop all " & (item 1 of argv) & " gimlet jobs?" buttons {"Cancel", "Stop all"} default button "Cancel" with icon caution' -e 'end run' \
-        "$(wc -w <<< "$ids" | tr -d ' ')" > /dev/null || exit 0
     cancel $ids
 }
 

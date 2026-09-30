@@ -38,7 +38,8 @@ gimlet-2 · ⏳ Waiting
    ├ Cancel
    ├ ───
    └ Preset: pitcher      (small grey details: Cores, Mem, Waiting: <reason>, Job ID)
-Stop all jobs             (only with 2+ jobs; always asks first)
+───
+Stop all jobs? ▸  Yes, stop N jobs   (whenever there are jobs; the submenu is the confirmation)
 ───
 Start new job ▸  shot / double / pitcher   (greyed out while a job is starting or waiting)
 Settings…
