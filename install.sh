@@ -22,7 +22,7 @@ fi
 if [ ! -f "$CONF_DIR/settings" ]; then
     read -rp "GenomeDK username: " username
     read -rp "Slurm account (project): " account
-    [[ "$username$account" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "Use only letters, digits, '_', '.' and '-'."; exit 1; }
+    [[ $username =~ ^[A-Za-z0-9_.-]+$ && $account =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "Both are needed. Use only letters, digits, '_', '.' and '-'."; exit 1; }
     sed -e "s/^USERNAME=.*/USERNAME=$username/" -e "s/^ACCOUNT=.*/ACCOUNT=$account/" \
         "$HERE/settings.example" > "$CONF_DIR/settings"
 fi

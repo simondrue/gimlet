@@ -11,20 +11,20 @@ gimlet is a macOS menu bar tool that starts, shows and stops these jobs, and let
 ## Form
 
 - A **SwiftBar plugin** written in shell, so users can read and change it.
-- Launches at login (SwiftBar setting).
-- Installed with `install.sh` (installs SwiftBar via brew, links the plugin, asks for username and account). A README documents the manual steps.
+- Launches at login: `install.sh` adds SwiftBar to macOS Login Items (SwiftBar's own setting can't be set from a script).
+- Installed with `install.sh` (installs SwiftBar via brew, writes a small plugin file that runs `gimlet menu`, asks for username and account). A README documents the manual steps.
 - Not chosen: a native Swift app (it could wrap the same scripts later), Python/rumps, xbar (both unmaintained).
 
 ## Menu bar icon
 
-A number in a circle (SF Symbol) = running jobs, plus `+N` for jobs waiting in the queue.
+A pill with a coloured dot and the number of running jobs, plus `+N` for jobs waiting in the queue (drawn by `gimlet-pill.js`).
 
 | Colour | Meaning |
 |---|---|
 | 🟢 green | all jobs running |
 | 🟠 orange | at least one job waiting in the queue |
 | ⚪ grey | no jobs |
-| 🔴 red | logged out; needs a 2FA login |
+| 🔴 red | logged out (needs a 2FA login), or GenomeDK not answering |
 
 ## Menu
 
@@ -40,9 +40,10 @@ gimlet-2 · ⏳ Waiting
    └ Preset: pitcher      (small grey details: Cores, Mem, Waiting: <reason>, Job ID)
 Stop all jobs             (only with 2+ jobs; always asks first)
 ───
-Start new job ▸  shot / double / pitcher
+Start new job ▸  shot / double / pitcher   (greyed out while a job is starting or waiting)
 Settings…
-Update gimlet             (only when the git remote has new commits)
+Refresh
+Update gimlet             (when the git remote has new commits; else "gimlet is up to date", click to check now)
 Log in to GenomeDK        (only when the connection is down)
 ```
 
@@ -66,7 +67,7 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 
 - Submitted with `sbatch`. The job name is its slot, `gimlet-1`, `gimlet-2`, … (the lowest free one), and the preset goes in the job comment. The app lists and manages **only** jobs named `gimlet-N`. Old `tunnel` jobs are ignored.
 - Slot names are reused, so VS Code's recent list keeps working.
-- New jobs pass `--exclude=<nodes of existing gimlet jobs>`. Two jobs on one node would make idle detection unreliable.
+- New jobs pass `--exclude=<nodes of existing gimlet jobs>`. Two jobs on one node would make idle detection unreliable. A waiting job has no node yet, so no new job starts while one is waiting.
 - **A job ends when**:
   1. it is stopped from the menu,
   2. it hits its time limit, or
@@ -98,6 +99,6 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 
 - Watchdog: counts user-owned `sshd: user@…` / `sshd-session: user@…` processes on the node once a minute, and writes `connected` / `idle N` to `~/.gimlet/<jobid>` on GenomeDK (only when it changes; the file is removed when the job ends). The menu reads these files in the same ssh call as `squeue` and removes any left by jobs that are gone. Status needs no Slurm calls. Job output goes to `/dev/null`.
 - The menu refreshes every 2 minutes (plugin file `gimlet.2m.sh`). Waiting for a new job to start asks Slurm nothing: `gimlet start` creates the job's status file empty right after `sbatch`, and a background ssh command reads it every 5 s (for up to an hour) until the job's first write, then redraws the menu. The file must exist beforehand: the login node sees a new file on the shared home up to ~45 s late, but a write into an existing file within a second when it is reopened (measured). No refresh on open (`swiftbar.refreshOnOpen`): SwiftBar waits for the plugin before showing the menu.
-- Starting a job shows `new <preset> job · starting…` within a second: `gimlet start` writes a local note and redraws, and that redraw reuses the last job list instead of asking GenomeDK. The line stays until the job runs (wait_start redraws) or the next refresh; only a failed start redraws at once. Menu items that run start or stop don't also carry `refresh=true`, since those commands redraw by themselves.
+- Starting a job shows `gimlet-N · ⏳ Starting…` (the slot it will get: the lowest free one in the last job list) within a second: `gimlet start` writes a local note and redraws, and that redraw reuses the last job list instead of asking GenomeDK. The line stays until the job runs (wait_start redraws) or the next refresh; only a failed start redraws at once. Menu items that run start or stop don't also carry `refresh=true`, since those commands redraw by themselves.
 - Notifications go through SwiftBar's `swiftbar://notify` URL, so they show SwiftBar's icon (`osascript display notification` shows Script Editor's). SwiftBar needs notification permission in System Settings.
 - Status checks first test the shared connection (`ssh -O check`) and never open a new login, so a logged-out menu doesn't cause repeated failed logins.

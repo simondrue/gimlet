@@ -22,36 +22,38 @@ CONF_DIR="$HOME/.config/gimlet"
 SETTINGS="$CONF_DIR/settings"
 SSH_CONFIG="$CONF_DIR/ssh_config"
 SOCKET="$CONF_DIR/login.sock"
-STATE="$CONF_DIR/state"       # "jobid state warned name" per job, to notice changes between refreshes
+LAST_SEEN="$CONF_DIR/state"   # "jobid state warned name" per job, to notice changes between refreshes
 STARTING="$CONF_DIR/starting" # preset of a start in progress, shown in the menu until the job is submitted
 STOPPING="$CONF_DIR/stopping" # one file per job being stopped, shown in the menu until the stop is done
 JOBS="$CONF_DIR/jobs"         # the job list from the last menu refresh
-CODE="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+CODE=$(command -v code || echo "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code")
 
 GREEN="#34C759" ORANGE="#FF9500" GREY="#8E8E93" RED="#FF3B30"
 
-if [ ! -f "$SETTINGS" ]; then
-    [ "${1:-}" = menu ] && printf '| sfimage=exclamationmark.circle sfcolor=%s\n---\nRun install.sh to set up gimlet\n' "$RED"
-    echo "gimlet: no settings at $SETTINGS; run install.sh" >&2
+# Takes the menu line and the terminal message.
+settings_error() {
+    [ "$COMMAND" = menu ] && printf '| sfimage=exclamationmark.circle sfcolor=%s\n---\n%s\n' "$RED" "$1"
+    echo "gimlet: $2" >&2
     exit 1
-fi
+}
+
+COMMAND=${1:-}
+KEYS="USERNAME ACCOUNT PARTITION LOGIN_HOST IDENTITY_FILE TIME IDLE_MINUTES PRESETS"
+[ -f "$SETTINGS" ] || settings_error "Run install.sh to set up gimlet" "no settings at $SETTINGS; run install.sh"
 # Read as plain KEY=value lines, not run as shell code. Values go into remote
 # commands, so anything beyond simple characters is refused.
-while IFS='=' read -r key value; do
-    case $key in
-        USERNAME|ACCOUNT|PARTITION|LOGIN_HOST|IDENTITY_FILE|TIME|IDLE_MINUTES|PRESETS) ;;
-        *) continue ;;
-    esac
+# The || reads a last line that has no newline.
+while IFS='=' read -r key value || [ -n "$key" ]; do
+    case " $KEYS " in *" $key "*) ;; *) continue ;; esac
     value=${value%[\"\']}; value=${value#[\"\']}
     allowed='^[A-Za-z0-9_.:/~-]*$'
     [ "$key" = PRESETS ] && allowed='^[A-Za-z0-9_.: -]*$'
-    [[ $value =~ $allowed ]] || {
-        [ "${1:-}" = menu ] && printf '| sfimage=exclamationmark.circle sfcolor=%s\n---\nBad %s in settings\n' "$RED" "$key"
-        echo "gimlet: bad $key in $SETTINGS: $value" >&2
-        exit 1
-    }
+    [[ $value =~ $allowed ]] || settings_error "Bad $key in settings" "bad $key in $SETTINGS: $value"
     printf -v "$key" '%s' "$value"
 done < "$SETTINGS"
+for key in $KEYS; do
+    [ -n "${!key+set}" ] || settings_error "Missing $key in settings" "no $key line in $SETTINGS (see settings.example)"
+done
 
 # Sent through SwiftBar, so the notification shows SwiftBar's icon instead of Script Editor's.
 notify() {
@@ -150,15 +152,25 @@ done
 REMOTE
         awk -F'|' -v user="$USERNAME" '
             $0 == "==" { status = 1; next }
-            status { split($0, a, " "); conn[a[1]] = a[2] == "connected" ? "connected" : a[2] == "idle" ? "idle " a[3] "m" : ""; next }
+            status { split($0, a, " "); conn[a[1]] = a[2] == "connected" ? "connected" : a[2] == "idle" ? "idle " a[3] : ""; next }
             $8 == user && $2 ~ /^gimlet-[0-9]+$/ { line[++n] = $2 "|" $1 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7; id[n] = $1; res[n] = $9 "|" $10 }
             END { for (i = 1; i <= n; i++) print line[i] "|" conn[id[i]] "|" res[i] }' |
         sort -t- -k2 -n
 }
 
+# Names for the job list's fields in awk, e.g. awk -F'|' "$JOB_FIELDS"' state == "RUNNING" { print name }'
+JOB_FIELDS='{ name = $1; id = $2; state = $3; node = $4 }'
+
+# Takes job ids and drops those jobs from the job list on stdin.
+drop_jobs() {
+    awk -F'|' -v s=" $* " "$JOB_FIELDS"' !index(s, " " id " ")'
+}
+
 # Slurm time (MM:SS, HH:MM:SS or D-HH:MM:SS) to seconds.
 seconds() {
     local t=$1 d=0 h=0 m=0 s=0 a b c
+    # No limit (UNLIMITED) or none known (INVALID): counts as far off.
+    [[ $t =~ ^[0-9:-]+$ ]] || { echo 999999999; return; }
     case $t in *-*) d=${t%%-*}; t=${t#*-} ;; esac
     IFS=: read -r a b c <<< "$t"
     if [ -n "$c" ]; then h=$a m=$b s=$c; elif [ -n "$b" ]; then m=$a s=$b; else s=$a; fi
@@ -172,9 +184,16 @@ pretty() {
 }
 
 # Why a job ended, from Slurm's accounting. A job that ends itself when idle counts as completed.
+# Accounting can lag behind the queue, so it asks again for up to a minute.
 end_reason() {
-    case $(remote "sacct -j $1 -X -n -P -o State" < /dev/null 2>/dev/null) in
-        COMPLETED*) echo "No VS Code was connected for $IDLE_MINUTES minutes." ;;
+    local state
+    for _ in 1 2 3 4 5 6; do
+        state=$(remote "sacct -j $1 -X -n -P -o State" < /dev/null 2>/dev/null)
+        case $state in ""|PENDING*|RUNNING*|COMPLETING*) sleep 10 ;; *) break ;; esac
+    done
+    # The idle limit is not the setting's: it may have changed since the job started.
+    case $state in
+        COMPLETED*) echo "No VS Code was connected for its idle limit." ;;
         TIMEOUT*) echo "It reached its time limit." ;;
         OUT_OF_MEMORY*) echo "It ran out of memory. Try a bigger job size." ;;
         CANCELLED*) echo "It was stopped." ;;
@@ -188,7 +207,7 @@ notify_changes() {
     local name id state node left rest old warned new=""
     while IFS='|' read -r name id state node left rest; do
         [ -n "$name" ] || continue
-        read -r _ old warned _ <<< "$(grep "^$id " "$STATE" 2>/dev/null)"
+        read -r _ old warned _ <<< "$(grep "^$id " "$LAST_SEEN" 2>/dev/null)"
         warned=${warned:-0}
         # Not only PENDING before: a job that starts at once is never seen pending.
         if [ "$old" != RUNNING ] && [ "$state" = RUNNING ]; then
@@ -200,11 +219,13 @@ notify_changes() {
         fi
         new="$new$id $state $warned $name"$'\n'
     done <<< "$1"
+    # Any job that had started, not only one seen RUNNING: a refresh can catch it COMPLETING.
+    # In the background, as the reason can take a minute to come.
     while read -r id old warned name; do
-        [ "$old" = RUNNING ] && [ -n "$name" ] && ! grep -q "^$id " <<< "$new" \
-            && notify "$name: tab closed 🧾" "$(end_reason "$id") Cheers!"
-    done < <(cat "$STATE" 2>/dev/null)
-    printf '%s' "$new" > "$STATE"
+        [ "$old" != PENDING ] && [ -n "$name" ] && ! grep -q "^$id " <<< "$new" \
+            && { notify "$name: tab closed 🧾" "$(end_reason "$id") Cheers!" > /dev/null 2>&1 & }
+    done < <(cat "$LAST_SEEN" 2>/dev/null)
+    printf '%s' "$new" > "$LAST_SEEN"
 }
 
 footer() {
@@ -228,12 +249,38 @@ update_line() {
         touch "$CONF_DIR/update-check"
         GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" git -C "$HERE" fetch -q < /dev/null > /dev/null 2>&1 &
     fi
-    behind=$(git -C "$HERE" rev-list --count 'HEAD..@{u}' 2>/dev/null)
+    behind=$(behind)
     if [ "${behind:-0}" -gt 0 ]; then
         echo "Update gimlet ($behind new) | bash=\"$SELF\" param1=update terminal=false"
     else
         echo "gimlet is up to date | bash=\"$SELF\" param1=check-update terminal=false color=$GREY tooltip=\"Click to check now\""
     fi
+}
+
+# Commits on the repo's upstream branch that are not here yet.
+behind() {
+    git -C "$HERE" rev-list --count 'HEAD..@{u}' 2>/dev/null
+}
+
+# Takes a lock name and the command to run: re-runs gimlet as that command under the lock,
+# so only one runs at a time.
+one_at_a_time() {
+    local lock=$1
+    shift
+    [ -n "${GIMLET_LOCKED:-}" ] || GIMLET_LOCKED=1 exec lockf -k "$CONF_DIR/$lock.lock" "$SELF" "$@"
+}
+
+# The menu when there is no job list: a red pill with its text, then one line.
+red_menu() {
+    echo "| $(pill "$1" $RED)"
+    echo "---"
+    echo "$2"
+    footer
+}
+
+# Ids of jobs being stopped. A mark older than a minute was left by a stop that died.
+stopping_ids() {
+    find "$STOPPING" -type f -mmin -1 -exec basename {} \; 2>/dev/null | paste -sd' ' -
 }
 
 # A job's submenu detail line: grey label, value aligned in a monospace column.
@@ -243,40 +290,34 @@ detail() {
 }
 
 menu() {
-    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem echo_stop p n c m
+    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem p n c m
     # One menu run at a time, so two quick refreshes don't both see a change and notify twice.
-    [ -n "${GIMLET_LOCKED:-}" ] || GIMLET_LOCKED=1 exec lockf -k "$CONF_DIR/menu.lock" "$SELF" menu
+    one_at_a_time menu menu
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
 
     if ! logged_in; then
-        echo "| $(pill "log in" $RED)"
-        echo "---"
-        echo "Log in to GenomeDK… | bash=\"$SELF\" param1=login terminal=true"
-        footer
+        red_menu "log in" "Log in to GenomeDK… | bash=\"$SELF\" param1=login terminal=true"
         return
     fi
     # A start or stop in progress; one older than a minute was left by a start or stop that died.
     # Its redraw reuses the last job list, so it shows at once.
     starting=$(find "$STARTING" -mmin -1 -exec cat {} \; 2>/dev/null)
-    stopping=$(find "$STOPPING" -type f -mmin -1 -exec basename {} \; 2>/dev/null | paste -sd' ' -)
+    stopping=$(stopping_ids)
     if [ -n "$starting$stopping" ] && [ -f "$JOBS" ]; then
         jobs=$(cat "$JOBS")
     elif jobs=$(fetch); then
         printf '%s' "$jobs" > "$JOBS"
         notify_changes "$jobs"
-        write_ssh_config "$(awk -F'|' '$3 == "RUNNING" { print $1 }' <<< "$jobs")"
+        write_ssh_config "$(awk -F'|' "$JOB_FIELDS"' state == "RUNNING" { print name }' <<< "$jobs")"
     else
-        echo "| $(pill offline $RED)"
-        echo "---"
-        echo "GenomeDK is not answering"
-        footer
+        red_menu offline "GenomeDK is not answering"
         return
     fi
 
     # Jobs being stopped are not counted.
-    active=$(awk -F'|' -v s=" $stopping " '!index(s, " " $2 " ")' <<< "$jobs")
-    running=$(grep -c '^[^|]*|[^|]*|RUNNING|' <<< "$active")
-    pending=$(grep -c '^[^|]*|[^|]*|PENDING|' <<< "$active")
+    active=$(drop_jobs $stopping <<< "$jobs")
+    running=$(awk -F'|' "$JOB_FIELDS"' state == "RUNNING" { n++ } END { print n + 0 }' <<< "$active")
+    pending=$(awk -F'|' "$JOB_FIELDS"' state == "PENDING" { n++ } END { print n + 0 }' <<< "$active")
     [ -n "$starting" ] && pending=$((pending + 1))
     if [ "$pending" -gt 0 ]; then
         echo "| $(pill "$running +$pending" $ORANGE)"
@@ -294,15 +335,13 @@ menu() {
         case " $stopping " in *" $id "*) state=STOPPING ;; esac
         case $state in
             RUNNING)
-                echo_stop="--Stop job | bash=\"$SELF\" param1=stop param2=$id param3=${conn%% *} terminal=false"
                 case $conn in
-                    connected) conn="🔌 Connected" ;;
-                    idle*) conn="💤 Idle ${conn#idle }" ;;
-                    *) conn="Starting…" ;;
+                    connected) echo "$name · 🔌 Connected | refresh=true" ;;
+                    idle*) echo "$name · 💤 Idle ${conn#idle }m | refresh=true" ;;
+                    *) echo "$name · Starting… | refresh=true" ;;
                 esac
-                echo "$name · $conn | refresh=true"
                 echo "--Open VS Code | bash=\"$SELF\" param1=open param2=$name terminal=false"
-                echo "$echo_stop"
+                echo "--Stop job | bash=\"$SELF\" param1=stop param2=$id param3=${conn%% *} terminal=false"
                 echo "-----"
                 detail Preset "$preset"; detail Cores "$cpus"; detail Mem "$mem"; detail Node "$node"; detail "Time left" "$left"; detail "Job ID" "$id"
                 ;;
@@ -316,19 +355,31 @@ menu() {
                 echo "$name · Stopping… | color=$GREY"
                 ;;
             *)
-                echo "$name · $(tr '[:upper:]' '[:lower:]' <<< "$state")"
+                echo "$name · $(tr '[:upper:]' '[:lower:]' <<< "$state") | refresh=true"
+                echo "--Cancel | bash=\"$SELF\" param1=stop param2=$id terminal=false"
                 ;;
         esac
     done <<< "$jobs"
-    [ -n "$starting" ] && echo "new $starting job · Starting… | refresh=true"
+    if [ -n "$starting" ]; then
+        # The slot submit_script will pick: the lowest free one in the last job list.
+        n=1
+        while grep -q "^gimlet-$n|" <<< "$jobs"; do n=$((n + 1)); done
+        echo "gimlet-$n · ⏳ Starting… | refresh=true"
+    fi
     [ "$(grep -c . <<< "$active")" -gt 1 ] && echo "Stop all jobs | bash=\"$SELF\" param1=stop-all terminal=false"
     [ -n "$jobs$starting" ] && echo "---"
 
-    echo "Start new job | refresh=true"
-    for p in $PRESETS; do
-        IFS=: read -r n c m <<< "$p"
-        echo "--$n ($c CPU, $m) | bash=\"$SELF\" param1=start param2=$n terminal=false"
-    done
+    # Greyed out (no action) while a job is starting or waiting: it has no node yet, so a new
+    # job can't be kept off it. start refuses too, in case this menu is out of date.
+    if [ "$pending" -gt 0 ]; then
+        echo "Start new job (after the waiting one starts)"
+    else
+        echo "Start new job | refresh=true"
+        for p in $PRESETS; do
+            IFS=: read -r n c m <<< "$p"
+            echo "--$n ($c CPU, $m) | bash=\"$SELF\" param1=start param2=$n terminal=false"
+        done
+    fi
     footer
 }
 
@@ -338,6 +389,9 @@ submit_script() {
 set -o pipefail
 user=$1 args=$2
 jobs=$(squeue -u "$user" -h -o '%j|%T|%N|%u' | awk -F'|' -v u="$user" '$4 == u && $1 ~ /^gimlet-[0-9]+$/') || exit 1
+# A waiting job has no node yet, so --exclude can't keep a new job off its node.
+waiting=$(awk -F'|' '$2 == "PENDING" { print $1; exit }' <<< "$jobs")
+[ -z "$waiting" ] || { echo "$waiting is still waiting for a node; start another once it runs." >&2; exit 1; }
 slot=1
 while grep -q "^gimlet-$slot|" <<< "$jobs"; do slot=$((slot + 1)); done
 # Keep jobs on separate nodes, so each job's idle check only sees its own connections.
@@ -348,22 +402,24 @@ REMOTE
     cat <<'REMOTE'
 GIMLET_JOB
 ) || exit 1
-# The empty status file lets wait_start see the job's first write at once.
-mkdir -p ~/.gimlet && : > ~/.gimlet/$id && echo "gimlet-$slot $id"
+# The status file lets wait_start see the job's first write at once. Only created, never
+# emptied: a job that starts at once may have written to it already.
+mkdir -p ~/.gimlet && touch ~/.gimlet/$id && echo "gimlet-$slot $id"
 REMOTE
 }
 
 start() {
-    local preset=${1:-} spec="" p cpus mem args out
+    local preset=${1:-} spec="" p cpus mem args out id
     for p in $PRESETS; do [ "${p%%:*}" = "$preset" ] && spec=$p; done
     [ -n "$spec" ] || die "unknown preset '$preset' (settings has: $PRESETS)"
     IFS=: read -r _ cpus mem <<< "$spec"
     # One start at a time, so two quick clicks don't pick the same slot.
-    [ -n "${GIMLET_LOCKED:-}" ] || GIMLET_LOCKED=1 exec lockf -k "$CONF_DIR/start.lock" "$SELF" start "$preset"
-    # Show the start at once; submitting takes a few seconds. The line stays until wait_start sees
-    # the job run (or the next refresh), and is only redrawn away at once if the start fails.
+    one_at_a_time start start "$preset"
+    # Show the start at once; submitting takes a few seconds. The note goes when start ends, but its
+    # drawn line stays until the next redraw (wait_start's when the job runs, or the next refresh).
+    # Only a failed start redraws at once.
     echo "$preset" > "$STARTING"
-    trap 'ok=$?; rm -f "$STARTING"; [ "$ok" = 0 ] || refresh' EXIT
+    trap 'rc=$?; rm -f "$STARTING"; [ "$rc" = 0 ] || refresh' EXIT
     refresh
 
     logged_in || die "not logged in to GenomeDK, run: gimlet login"
@@ -373,8 +429,8 @@ start() {
     # Picking the slot and submitting happen in one call: each ssh command costs seconds on a busy login node.
     out=$(submit_script | remote bash -s -- "$USERNAME" "'$args'" 2>&1) || die "could not start a job: $out"
     echo "Submitted $out"
-    out=${out##* }
-    wait_start "$out" < /dev/null > /dev/null 2>&1 &
+    id=${out##* }
+    wait_start "$id" < /dev/null > /dev/null 2>&1 &
 }
 
 # Waits for a new job to start without asking Slurm: the job writes its status into the file
@@ -386,51 +442,48 @@ wait_start() {
 }
 
 stop() {
-    local id=${1:-} conn=${2:-} out
-    [ -n "$id" ] || die "usage: gimlet stop <jobid>"
+    local id=${1:-} conn=${2:-}
+    [[ $id =~ ^[1-9][0-9]*$ ]] || die "usage: gimlet stop <jobid>"
     # Only ever cancel our own gimlet jobs. Checked against the last job list, so the stop needs no extra ssh call.
-    awk -F'|' -v id="$id" '$2 == id { found = 1 } END { exit !found }' "$JOBS" 2>/dev/null || die "job $id is not one of your gimlet jobs"
+    awk -F'|' -v want="$id" "$JOB_FIELDS"' id == want { found = 1 } END { exit !found }' "$JOBS" 2>/dev/null \
+        || die "job $id is not one of your gimlet jobs"
     if [ "$conn" = connected ]; then
         osascript -e 'display dialog "A VS Code window is connected to this job. Stop it anyway?" buttons {"Cancel", "Stop job"} default button "Cancel" with icon caution' >/dev/null || exit 0
     fi
-    mark_stopping "$id"
-    out=$(remote "scancel -u $USERNAME $id && rm -f ~/.gimlet/$id" 2>&1) || die "could not stop job $id: $out"
-    forget "$id"
+    cancel "$id"
 }
 
-# Shows the jobs as stopping at once. The marks go when the stop ends, and the menu then asks GenomeDK.
-mark_stopping() {
+stop_all() {
+    local ids
+    # Jobs already being stopped are left out.
+    ids=$(drop_jobs $(stopping_ids) 2>/dev/null < "$JOBS" | awk -F'|' "$JOB_FIELDS"' { print id }' | paste -sd' ' -)
+    [ -n "$ids" ] || die "you have no gimlet jobs"
+    osascript -e 'on run argv' -e 'display dialog "Stop all " & (item 1 of argv) & " gimlet jobs?" buttons {"Cancel", "Stop all"} default button "Cancel" with icon caution' -e 'end run' \
+        "$(wc -w <<< "$ids" | tr -d ' ')" > /dev/null || exit 0
+    cancel $ids
+}
+
+# Takes job ids and cancels them. They show as stopping at once; the marks go when this ends,
+# and the menu then asks GenomeDK.
+cancel() {
+    local out
     mkdir -p "$STOPPING"
     (cd "$STOPPING" && touch "$@")
     trap "(cd '$STOPPING' && rm -f $*); refresh" EXIT
     refresh
-}
-
-# Drops stopped jobs from the last job list, so a redraw that reuses it (while a start is in progress) doesn't count them again.
-forget() {
-    awk -F'|' -v s=" $* " '!index(s, " " $2 " ")' "$JOBS" > "$JOBS.tmp" && mv "$JOBS.tmp" "$JOBS"
-}
-
-stop_all() {
-    local ids out
-    ids=$(awk -F'|' '{ print $2 }' "$JOBS" 2>/dev/null | paste -sd' ' -)
-    [ -n "$ids" ] || die "you have no gimlet jobs"
-    osascript -e 'on run argv' -e 'display dialog "Stop all " & (item 1 of argv) & " gimlet jobs?" buttons {"Cancel", "Stop all"} default button "Cancel" with icon caution' -e 'end run' \
-        "$(wc -w <<< "$ids" | tr -d ' ')" > /dev/null || exit 0
-    mark_stopping $ids
-    out=$(remote "scancel -u $USERNAME $ids && rm -f$(printf ' ~/.gimlet/%s' $ids)" 2>&1) || die "could not stop jobs: $out"
-    forget $ids
+    out=$(remote "scancel -u $USERNAME $* && rm -f$(printf ' ~/.gimlet/%s' "$@")" 2>&1) || die "could not stop job $*: $out"
+    # Drops them from the last job list, so a redraw that reuses it (while a start is in progress) doesn't count them again.
+    drop_jobs "$@" < "$JOBS" > "$JOBS.tmp" && mv "$JOBS.tmp" "$JOBS"
 }
 
 open_vscode() {
-    local host=${1:-} dir=${2:-} code
+    local host=${1:-} dir=${2:-}
     [ -n "$host" ] || die "usage: gimlet open <gimlet-N> [folder]"
-    code=$(command -v code || echo "$CODE")
     if [ -n "$dir" ]; then
-        "$code" --remote "ssh-remote+$host" "$dir"
+        "$CODE" --remote "ssh-remote+$host" "$dir"
     else
         # An empty window on the node, where File > Open Folder browses GenomeDK.
-        "$code" --new-window --remote "ssh-remote+$host"
+        "$CODE" --new-window --remote "ssh-remote+$host"
     fi
 }
 
@@ -443,11 +496,11 @@ login() {
 
 # ProxyCommand for gimlet-N: finds the node of that slot's running job and connects to it.
 proxy() {
-    local host=${1:-} node
+    local host=${1:-} jobs node
     logged_in || die "not logged in to GenomeDK. Use 'Log in to GenomeDK' in the gimlet menu."
     # stdin is the connection being proxied, so the lookup must not read from it.
-    node=$(fetch < /dev/null) || die "GenomeDK is not answering"
-    node=$(awk -F'|' -v h="$host" '$1 == h && $3 == "RUNNING" { print $4; exit }' <<< "$node")
+    jobs=$(fetch < /dev/null) || die "GenomeDK is not answering"
+    node=$(awk -F'|' -v h="$host" "$JOB_FIELDS"' name == h && state == "RUNNING" { print node; exit }' <<< "$jobs")
     [ -n "$node" ] || die "$host has no running job. Start one from the gimlet menu."
     exec ssh -F "$SSH_CONFIG" -o BatchMode=yes -W "$node:22" gimlet-login
 }
@@ -463,7 +516,7 @@ check_update() {
     local out behind
     touch "$CONF_DIR/update-check"
     out=$(git -C "$HERE" fetch -q 2>&1) || die "could not check for updates: $out"
-    behind=$(git -C "$HERE" rev-list --count 'HEAD..@{u}')
+    behind=$(behind)
     if [ "$behind" -gt 0 ]; then
         notify "Update available ✨" "$behind new. Choose Update gimlet in the menu."
     else
@@ -474,13 +527,12 @@ check_update() {
 
 # Checks each part of the setup and says how to fix what is missing.
 doctor() {
-    local code plugins failed=0
+    local plugins failed=0
     check() {
         local label=$1 hint=$2
         shift 2
         if "$@" > /dev/null 2>&1; then echo "✓ $label"; else echo "✗ $label: $hint"; failed=1; fi
     }
-    code=$(command -v code || echo "$CODE")
     plugins=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null)
     plugins=${plugins/#\~/$HOME}
 
@@ -489,8 +541,8 @@ doctor() {
     # ssh reads an Include after a Host line as part of that host.
     check "gimlet's ssh config included" "put 'Include $SSH_CONFIG' at the top of ~/.ssh/config (install.sh does this)" \
         awk -v inc="Include $SSH_CONFIG" '$0 == inc { found = 1; exit } tolower($1) ~ /^(host|match)$/ { exit } END { exit !found }' ~/.ssh/config
-    check "VS Code" "install Visual Studio Code in /Applications" test -x "$code"
-    check "VS Code Remote-SSH extension" "install 'Remote - SSH' in VS Code" grep -qix ms-vscode-remote.remote-ssh <("$code" --list-extensions 2>/dev/null)
+    check "VS Code" "install Visual Studio Code in /Applications" test -x "$CODE"
+    check "VS Code Remote-SSH extension" "install 'Remote - SSH' in VS Code" grep -qix ms-vscode-remote.remote-ssh <("$CODE" --list-extensions 2>/dev/null)
     check "menu bar plugin" "run install.sh" grep -qF "$SELF" "$plugins/gimlet.2m.sh"
     check "SwiftBar running" "open SwiftBar" pgrep -x SwiftBar
     check "logged in to GenomeDK" "run: gimlet login" logged_in
