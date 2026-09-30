@@ -95,13 +95,14 @@ remote() {
 
 # Prints one line per gimlet job, sorted by slot:
 #   name|jobid|state|node|timeleft|preset|reason|connection
+# squeue can list other users' jobs despite -u, so the owner is checked here too.
 fetch() {
     # Running jobs read their idle limit from ~/.gimlet/idle_minutes, so setting changes reach them.
-    remote "mkdir -p ~/.gimlet; echo $IDLE_MINUTES > ~/.gimlet/idle_minutes; squeue -u $USERNAME -h -o '%i|%j|%T|%N|%L|%k|%r'; echo ==; cat ~/.gimlet/*.status 2>/dev/null; true" |
-        awk -F'|' '
+    remote "mkdir -p ~/.gimlet; echo $IDLE_MINUTES > ~/.gimlet/idle_minutes; squeue -u $USERNAME -h -o '%i|%j|%T|%N|%L|%k|%r|%u'; echo ==; cat ~/.gimlet/*.status 2>/dev/null; true" |
+        awk -F'|' -v user="$USERNAME" '
             $0 == "==" { status = 1; next }
             status { split($0, a, " "); conn[a[1]] = (a[2] == "connected") ? "connected" : "idle " a[3] "m"; next }
-            $2 ~ /^gimlet-[0-9]+$/ { line[++n] = $2 "|" $1 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7; id[n] = $1 }
+            $8 == user && $2 ~ /^gimlet-[0-9]+$/ { line[++n] = $2 "|" $1 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7; id[n] = $1 }
             END { for (i = 1; i <= n; i++) print line[i] "|" conn[id[i]] }' |
         sort -t- -k2 -n
 }
@@ -237,10 +238,13 @@ start() {
 stop() {
     local id=${1:-} conn=${2:-} out
     [ -n "$id" ] || die "usage: gimlet stop <jobid>"
+    # Only ever cancel our own gimlet jobs.
+    out=$(fetch) || die "GenomeDK is not answering"
+    awk -F'|' -v id="$id" '$2 == id { found = 1 } END { exit !found }' <<< "$out" || die "job $id is not one of your gimlet jobs"
     if [ "$conn" = connected ]; then
         osascript -e 'display dialog "A VS Code window is connected to this job. Stop it anyway?" buttons {"Cancel", "Stop job"} default button "Cancel" with icon caution' >/dev/null || exit 0
     fi
-    out=$(remote "scancel $id" 2>&1) || die "could not stop job $id: $out"
+    out=$(remote "scancel -u $USERNAME $id" 2>&1) || die "could not stop job $id: $out"
     refresh
 }
 
@@ -268,7 +272,8 @@ proxy() {
     local host=${1:-} node
     logged_in || die "not logged in to GenomeDK. Use 'Log in to GenomeDK' in the gimlet menu."
     # stdin is the connection being proxied, so the lookup must not read from it.
-    node=$(remote "squeue -u $USERNAME -h -t RUNNING -n $host -o %N" < /dev/null) || die "GenomeDK is not answering"
+    node=$(fetch < /dev/null) || die "GenomeDK is not answering"
+    node=$(awk -F'|' -v h="$host" '$1 == h && $3 == "RUNNING" { print $4 }' <<< "$node")
     [ -n "$node" ] || die "$host has no running job. Start one from the gimlet menu."
     exec ssh -F "$SSH_CONFIG" -o BatchMode=yes -W "$node:22" gimlet-login
 }
