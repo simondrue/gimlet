@@ -9,10 +9,13 @@ INCLUDE="Include $CONF_DIR/ssh_config"
 
 mkdir -p "$CONF_DIR"
 
-# SwiftBar
-if [ ! -d /Applications/SwiftBar.app ]; then
+# SwiftBar, in ~/Applications so no admin password is needed
+swiftbar=/Applications/SwiftBar.app
+[ -d "$swiftbar" ] || swiftbar="$HOME/Applications/SwiftBar.app"
+if [ ! -d "$swiftbar" ]; then
     command -v brew > /dev/null || { echo "Install Homebrew first: https://brew.sh"; exit 1; }
-    brew install --cask swiftbar
+    mkdir -p "$HOME/Applications"
+    brew install --cask --appdir="$HOME/Applications" swiftbar
 fi
 
 # Settings
@@ -53,8 +56,8 @@ chmod +x "$plugins/gimlet.15s.sh"
 echo "Menu bar plugin written to $plugins/gimlet.15s.sh"
 
 # Start SwiftBar now and at every login
-osascript -e 'tell application "System Events" to if not (exists login item "SwiftBar") then make login item at end with properties {path:"/Applications/SwiftBar.app", hidden:true}' > /dev/null \
+osascript -e 'on run argv' -e 'tell application "System Events" to if not (exists login item "SwiftBar") then make login item at end with properties {path:(item 1 of argv), hidden:true}' -e 'end run' "$swiftbar" > /dev/null \
     || echo "Could not add SwiftBar to login items; turn on 'Launch at login' in SwiftBar's preferences."
-open -a SwiftBar
+open "$swiftbar"
 
 echo "Done. Click the gimlet icon in the menu bar and choose 'Log in to GenomeDK…'."

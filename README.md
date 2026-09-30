@@ -17,7 +17,7 @@ git clone <this repo> ~/git_repos/gimlet
 
 The installer:
 
-1. installs [SwiftBar](https://github.com/swiftbar/SwiftBar) with Homebrew,
+1. installs [SwiftBar](https://github.com/swiftbar/SwiftBar) with Homebrew into `~/Applications` (no admin password needed),
 2. asks for your GenomeDK username and Slurm account and writes `~/.config/gimlet/settings`,
 3. adds `Include ~/.config/gimlet/ssh_config` to the top of `~/.ssh/config` (backup in `~/.ssh/config.before-gimlet`),
 4. puts the menu bar plugin in SwiftBar's plugin folder (`~/SwiftBar` unless you already have one),
