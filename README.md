@@ -2,9 +2,13 @@
 
 A Mac menu bar tool for running VS Code on GenomeDK compute nodes instead of the login node.
 
+On GenomeDK, VS Code Remote-SSH sessions must not run on the shared login node; they belong on a compute node with its own CPUs and memory. Doing that by hand means starting a Slurm job, finding which node it landed on, and pointing ssh at it — and forgotten jobs keep running and use up your allocation. gimlet does this from the menu bar: pick a job size, wait for it to start, and open VS Code on it. It shows your jobs at a glance and lets you stop them with one click.
+
 - The icon shows how many jobs you have running (green), a `+N` when some are waiting in the queue (orange), or red when you need to log in.
 - Each job gets a stable ssh host name, `gimlet-1`, `gimlet-2`, … which any VS Code window can connect to.
 - A job ends itself after 60 minutes with no VS Code connected, or when it hits its time limit (12 h).
+
+**The name:** a gimlet is a small hand drill for boring small holes. It has a screw tip that pulls itself into the wood and a cross handle you twist by hand. Carpenters use it to make pilot holes for screws and nails, so the wood doesn't split and the screw goes in straight. It was around long before power drills, and it is still handy for a quick small hole where a drill would be overkill. The word comes from Old French *guimbelet*, likely from Middle Dutch *wimmelkijn*, "little auger". This tool bores small holes (ssh tunnels) from your Mac into the compute nodes. It is also a drink — cheers 🍸
 
 Design and background: [docs/design.md](docs/design.md), [docs/research/](docs/research/).
 
@@ -45,7 +49,7 @@ The same commands work in a terminal: `./gimlet list`, `./gimlet start small`, `
 | Piece | What it does |
 |---|---|
 | `gimlet` | All logic: menu output, start/stop, opening VS Code, and the ssh helper that finds a slot's node. |
-| `gimlet-job.sh` | The Slurm job. Every minute it checks for your ssh connections on its node; after `IDLE_MINUTES` without one, it exits. It writes its state to `~/.gimlet/` on GenomeDK so the menu can show connected/idle. |
+| `gimlet-job.sh` | The Slurm job. Every minute it checks for your ssh connections on its node; after `IDLE_MINUTES` without one, it exits. It reports connected/idle in its Slurm job comment, which the menu reads with `squeue`. Nothing is stored on GenomeDK. |
 | `~/.config/gimlet/ssh_config` | Generated. `gimlet-login` keeps one shared connection to the login node; `gimlet-*` connects to a job's node through it. |
 
-Jobs appear in `squeue` as `gimlet-1`, `gimlet-2`, … Logs are in `~/.gimlet/` on GenomeDK.
+Jobs appear in `squeue` as `gimlet-1`, `gimlet-2`, … with a comment like `small idle 5`. Job output is discarded.

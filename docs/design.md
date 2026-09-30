@@ -88,7 +88,7 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 
 ## Implementation choices
 
-- Watchdog: counts user-owned `sshd: user@…` / `sshd-session: user@…` processes on the node once a minute, and writes `connected` / `idle N` to `~/.gimlet/<jobid>.status`. The menu reads these files in the same ssh call as `squeue`.
+- Watchdog: counts user-owned `sshd: user@…` / `sshd-session: user@…` processes on the node once a minute, and reports `<preset> connected` / `<preset> idle N` in its own job comment (`scontrol update`, only when it changes). The menu reads it with `squeue`, so nothing is stored on GenomeDK. Job output goes to `/dev/null`.
 - The menu refreshes every 15 s (plugin file `gimlet.15s.sh`).
 - Notifications use `osascript display notification`.
 - Status checks first test the shared connection (`ssh -O check`) and never open a new login, so a logged-out menu doesn't cause repeated failed logins.
