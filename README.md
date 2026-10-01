@@ -35,15 +35,15 @@ If you move the repo, run `install.sh` again. If something doesn't work, `./giml
 ## Use
 
 1. Click the icon → **Log in to GenomeDK…**. A Terminal window opens. Type your 2FA code if asked. The login is shared by the menu and all VS Code windows until your network changes.
-2. **Start new job** → shot / double / pitcher. The icon turns orange while the job waits, and a notification tells you when it runs.
+2. **Start new job** → single / double / pitcher / shot, or **Custom order…** to type cores, memory, time limit and GPUs in a form. GPU jobs run on `gpu-short`, for at most 2 hours. The icon turns orange while the job waits, and a notification tells you when it runs.
 3. On the job → **Open VS Code**. A VS Code window opens on the node; use File → Open Folder to browse GenomeDK. Or in VS Code, pick `gimlet-1` from Remote-SSH's host list.
 4. Close your VS Code windows when done. The job ends by itself 60 minutes later, or stop it from the menu. **Stop all jobs?** stops every job; confirm in its submenu.
 
 Work still running on the node when the job ends (including tmux) is killed. Use `sbatch` for long runs.
 
-**Settings…** opens `~/.config/gimlet/settings` in a text editor, where you can change presets, time limit, idle minutes, account and partition.
+**Settings…** opens a form for username, account, login host, ssh key, time limit and idle minutes. Presets and partition are edited in `~/.config/gimlet/settings`: the form's **Edit presets in file…** opens it in a text editor.
 
-The same commands work in a terminal: `./gimlet list`, `./gimlet start shot`, `./gimlet open gimlet-1 /some/folder`, `./gimlet stop <jobid>`, `./gimlet stop-all`, `./gimlet doctor`.
+The same commands work in a terminal: `./gimlet list`, `./gimlet start single`, `./gimlet start custom 6 12 24:00:00 0`, `./gimlet open gimlet-1 /some/folder`, `./gimlet stop <jobid>`, `./gimlet stop-all`, `./gimlet doctor`.
 
 When the repo tracks a git remote, the menu checks it once a day and shows **Update gimlet** when there are new commits.
 
@@ -54,6 +54,7 @@ If the menu is slow to react to clicks: SwiftBar runs gimlet through your login 
 | Piece | What it does |
 |---|---|
 | `gimlet` | All logic: menu output, start/stop, opening VS Code, and the ssh helper that finds a slot's node. |
+| `gimlet-form.js` | The Custom order and Settings forms. |
 | `gimlet-job.sh` | The Slurm job. Every minute it checks for your ssh connections on its node; after `IDLE_MINUTES` without one, it exits. It reports connected/idle in a small file, `~/.gimlet/<jobid>` on GenomeDK, which the menu reads; the file is removed when the job ends. |
 | `~/.config/gimlet/ssh_config` | Generated. `gimlet-login` keeps one shared connection to the login node; `gimlet-*` connects to a job's node through it. Running jobs are also listed by name, so VS Code's host list shows them. |
 

@@ -33,7 +33,7 @@ gimlet-1 · 🍸 Sipping…
    ├ Open VS Code
    ├ Stop job
    ├ ───
-   └ Preset: shot         (small grey details: Cores, Mem, Node, Time left, Job ID)
+   └ Preset: single       (small grey details: Cores, Mem, Node, Time left, Job ID)
 gimlet-2 · ⏳ Waiting
    ├ Cancel
    ├ ───
@@ -41,7 +41,7 @@ gimlet-2 · ⏳ Waiting
 ───
 Stop all jobs? ▸  Yes, stop N jobs   (whenever there are jobs; the submenu is the confirmation)
 ───
-Start new job ▸  shot / double / pitcher   (greyed out while a job is waiting)
+Start new job ▸  single / double / pitcher / shot / Custom order…   (greyed out while a job is waiting)
 Settings…
 Refresh
 Update gimlet             (when the git remote has new commits; else "gimlet is up to date", click to check now)
@@ -69,11 +69,11 @@ Log in to GenomeDK        (only when the connection is down)
 | GenomeDK username | — (asked at install) |
 | Slurm account | — (asked at install; e.g. `MomaDiagnosticsHg38`) |
 | Partition | none |
-| Presets | shot 2 CPU / 4G, double 4 / 8G, pitcher 8 / 16G |
+| Presets | single 2 CPU / 8G, double 4 / 16G, pitcher 8 / 32G, shot 4 / 32G / 1 GPU (`gpu-short`, 2h) |
 | Time limit | `12:00:00` (all presets) |
 | Idle minutes before auto-stop | 60 |
 
-Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings…** opens it in a text editor.
+Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings…** opens a form for everything except presets and partition, which are edited in the file (the form has a button that opens it).
 
 ## Jobs
 

@@ -14,5 +14,6 @@ IDENTITY_FILE=~/.ssh/id_ed25519
 TIME=12:00:00
 IDLE_MINUTES=60
 
-# Job sizes offered under "Start new job", as name:cpus:memory.
-PRESETS="shot:2:4G double:4:8G pitcher:8:16G"
+# Job sizes offered under "Start new job", as name:cpus:memory, optionally
+# followed by :gpus. GPU jobs run on gpu-short, for at most 2 hours.
+PRESETS="single:2:8G double:4:16G pitcher:8:32G shot:4:32G:1"

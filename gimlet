@@ -1,7 +1,8 @@
 #!/bin/bash
 # gimlet: VS Code jobs on GenomeDK, driven from the SwiftBar menu or the terminal.
 #
-#   gimlet start <preset>      submit a new job (shot, double, pitcher, ...)
+#   gimlet start <preset>      submit a new job (single, double, pitcher, ...)
+#   gimlet start custom        submit a custom size, asked in a form (or: custom <cores> <mem G> <time> <gpus>)
 #   gimlet stop <jobid>        cancel a job
 #   gimlet stop-all            cancel all your gimlet jobs
 #   gimlet open <host> [dir]   open VS Code on gimlet-N (an empty window if no dir is given)
@@ -10,6 +11,7 @@
 #   gimlet menu                SwiftBar menu output
 #   gimlet proxy <host>        ssh ProxyCommand for gimlet-N (used by the generated ssh config)
 #   gimlet ssh-config          rewrite the generated ssh config from the settings
+#   gimlet settings            change the settings in a form
 #   gimlet doctor              check the setup
 #   gimlet update              update gimlet from its git remote
 #   gimlet check-update        check its git remote for updates now
@@ -39,6 +41,10 @@ settings_error() {
 
 COMMAND=${1:-}
 KEYS="USERNAME ACCOUNT PARTITION LOGIN_HOST IDENTITY_FILE TIME IDLE_MINUTES PRESETS"
+SETTING_CHARS='^[A-Za-z0-9_.:/~-]*$'
+TIME_FORMAT='^([0-9]+-)?[0-9]{1,2}:[0-5][0-9]:[0-5][0-9]$'
+# GPU jobs go to gpu-short, GenomeDK's partition for GPU jobs of up to 2 hours.
+GPU_PARTITION=gpu-short GPU_TIME=2:00:00
 [ -f "$SETTINGS" ] || settings_error "Run install.sh to set up gimlet" "no settings at $SETTINGS; run install.sh"
 # Read as plain KEY=value lines, not run as shell code. Values go into remote
 # commands, so anything beyond simple characters is refused.
@@ -46,7 +52,7 @@ KEYS="USERNAME ACCOUNT PARTITION LOGIN_HOST IDENTITY_FILE TIME IDLE_MINUTES PRES
 while IFS='=' read -r key value || [ -n "$key" ]; do
     case " $KEYS " in *" $key "*) ;; *) continue ;; esac
     value=${value%[\"\']}; value=${value#[\"\']}
-    allowed='^[A-Za-z0-9_.:/~-]*$'
+    allowed=$SETTING_CHARS
     [ "$key" = PRESETS ] && allowed='^[A-Za-z0-9_.: -]*$'
     [[ $value =~ $allowed ]] || settings_error "Bad $key in settings" "bad $key in $SETTINGS: $value"
     printf -v "$key" '%s' "$value"
@@ -232,7 +238,7 @@ notify_changes() {
 
 footer() {
     echo "---"
-    echo "Settings… | bash=/usr/bin/open param1=-t param2=\"$SETTINGS\" terminal=false"
+    echo "Settings… | bash=\"$SELF\" param1=settings terminal=false"
     echo "Refresh | refresh=true"
     update_line
     local quotes=("Shaken, not sbatch'd" "Idle nodes are empty glasses"
@@ -252,11 +258,8 @@ update_line() {
         GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" git -C "$HERE" fetch -q < /dev/null > /dev/null 2>&1 &
     fi
     behind=$(behind)
-    if [ "${behind:-0}" -gt 0 ]; then
-        echo "Update gimlet ($behind new) | bash=\"$SELF\" param1=update terminal=false"
-    else
-        echo "gimlet is up to date | bash=\"$SELF\" param1=check-update terminal=false color=$GREY tooltip=\"Click to check now\""
-    fi
+    # Only shown when there is an update.
+    [ "${behind:-0}" -gt 0 ] && echo "✨ Update gimlet ($behind new) | bash=\"$SELF\" param1=update terminal=false"
 }
 
 # Commits on the repo's upstream branch that are not here yet.
@@ -292,7 +295,7 @@ detail() {
 }
 
 menu() {
-    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem p n c m wn wc wm g
+    local jobs active running pending starting stopping name id state node left preset reason conn cpus mem p n c m t wn wc wm wt g
     # One menu run at a time, so two quick refreshes don't both see a change and notify twice.
     one_at_a_time menu menu
     [ "$SETTINGS" -nt "$SSH_CONFIG" ] && write_ssh_config ""
@@ -386,16 +389,21 @@ menu() {
     else
         echo "Start new job | refresh=true"
         # One line per size: its name, then its details in grey, in columns like a job's details.
-        wn=0 wc=0 wm=0
+        wn=0 wc=0 wm=0 wt=0
         for p in $PRESETS; do
-            IFS=: read -r n c m <<< "$p"
+            IFS=: read -r n c m g <<< "$p"
+            t=$(pretty "$(gpu_time "${g:-0}" "$TIME")")
             [ "${#n}" -gt "$wn" ] && wn=${#n}; [ "${#c}" -gt "$wc" ] && wc=${#c}; [ "${#m}" -gt "$wm" ] && wm=${#m}
+            [ "${#t}" -gt "$wt" ] && wt=${#t}
         done
         for p in $PRESETS; do
-            IFS=: read -r n c m <<< "$p"
-            printf -- '--%-*s  \e[90m%*s cores · %*s · %s\e[0m | ansi=true font=Menlo bash="%s" param1=start param2=%s terminal=false\n' \
-                "$wn" "$n" "$wc" "$c" "$wm" "$m" "$(pretty "$TIME")" "$SELF" "$n"
+            IFS=: read -r n c m g <<< "$p"
+            t=$(pretty "$(gpu_time "${g:-0}" "$TIME")")
+            g=${g:-0}; if [ "$g" = 0 ]; then g=""; else g=" · $g GPU"; fi
+            printf -- '--%-*s  \e[90m%*s cores · %*s · %*s%s\e[0m | ansi=true font=Menlo bash="%s" param1=start param2=%s terminal=false\n' \
+                "$wn" "$n" "$wc" "$c" "$wm" "$m" "$wt" "$t" "$g" "$SELF" "$n"
         done
+        echo "--Custom order… | bash=\"$SELF\" param1=start param2=custom terminal=false"
     fi
     footer
 }
@@ -425,13 +433,92 @@ mkdir -p ~/.gimlet && touch ~/.gimlet/$id && echo "gimlet-$slot $id"
 REMOTE
 }
 
+# Why a custom size (cores, memory in G, time, GPUs) is not valid, or nothing if it is.
+# Limits are left to sbatch, which refuses sizes the partition can't give.
+custom_error() {
+    if ! [[ ${1:-} =~ ^[1-9][0-9]*$ ]]; then echo "Cores must be a whole number, like 4."
+    elif ! [[ ${2:-} =~ ^[1-9][0-9]*$ ]]; then echo "Memory must be a whole number of G, like 8."
+    elif ! [[ ${3:-} =~ $TIME_FORMAT ]]; then echo "Time must be H:MM:SS or D-HH:MM:SS, like 12:00:00."
+    elif ! [[ ${4:-} =~ ^[0-9]+$ ]]; then echo "GPUs must be a whole number, like 1, or 0 for none."
+    elif [ "$(gpu_time "$4" "$3")" != "$3" ]; then echo "GPU jobs can run at most $(pretty "$GPU_TIME"), like $GPU_TIME."
+    fi
+}
+
+# Takes a GPU count and a time limit: prints the time limit, cut to GPU_TIME for a GPU job.
+gpu_time() {
+    if [ "$1" != 0 ] && [ "$(seconds "$2")" -gt "$(seconds "$GPU_TIME")" ]; then echo "$GPU_TIME"; else echo "$2"; fi
+}
+
+# Shows the custom order form until its values are valid, then prints "cores mem time gpus". Fails on Cancel.
+custom_form() {
+    local cpus=4 mem=8 time=$TIME gpus=0 error="" out
+    while out=$(osascript -l JavaScript "$HERE/gimlet-form.js" "What is your poison?" 🧪 Order "" "$error" \
+            Cores "$cpus" "" Memory "$mem" G Time "$time" H:MM:SS GPUs "$gpus" "0 for none, max 2h"); do
+        IFS='|' read -r cpus mem time gpus <<< "$out"
+        error=$(custom_error "$cpus" "$mem" "$time" "$gpus")
+        [ -n "$error" ] || { echo "$cpus $mem $time $gpus"; return; }
+    done
+    return 1
+}
+
+# Why the settings from the form are not valid, or nothing if they are.
+settings_problem() {
+    local key
+    for key in USERNAME ACCOUNT LOGIN_HOST IDENTITY_FILE TIME IDLE_MINUTES; do
+        [[ ${!key} =~ $SETTING_CHARS ]] || { echo "Only letters, digits and _ . : / ~ - are allowed."; return; }
+    done
+    if [ -z "$USERNAME" ] || [ -z "$ACCOUNT" ] || [ -z "$LOGIN_HOST" ]; then echo "Username, account and login host can't be empty."
+    elif [ ! -f "${IDENTITY_FILE/#\~/$HOME}" ]; then echo "There is no SSH key at $IDENTITY_FILE."
+    elif ! [[ $TIME =~ $TIME_FORMAT ]]; then echo "Time limit must be H:MM:SS or D-HH:MM:SS, like 12:00:00."
+    elif ! [[ $IDLE_MINUTES =~ ^[1-9][0-9]*$ ]]; then echo "Idle time must be a whole number of minutes, like 60."
+    fi
+}
+
+# Shows the settings form until its values are valid, then saves them. Presets and partition are edited in the file.
+settings_form() {
+    local error="" out rc
+    while true; do
+        out=$(osascript -l JavaScript "$HERE/gimlet-form.js" Settings ⚙️ Save "Edit presets in file…" "$error" \
+            Username "$USERNAME" "" Account "$ACCOUNT" project \
+            "Login host" "$LOGIN_HOST" "" "SSH key" "$IDENTITY_FILE" "" \
+            "Time limit" "$TIME" H:MM:SS "Idle time" "$IDLE_MINUTES" minutes)
+        rc=$?
+        [ "$rc" = 2 ] && exec open -t "$SETTINGS"
+        [ "$rc" = 0 ] || return 0
+        IFS='|' read -r USERNAME ACCOUNT LOGIN_HOST IDENTITY_FILE TIME IDLE_MINUTES <<< "$out"
+        error=$(settings_problem)
+        [ -n "$error" ] || break
+    done
+    # Only the KEY=value lines change, so the comments stay.
+    export USERNAME ACCOUNT LOGIN_HOST IDENTITY_FILE TIME IDLE_MINUTES
+    awk -F= '$1 ~ /^(USERNAME|ACCOUNT|LOGIN_HOST|IDENTITY_FILE|TIME|IDLE_MINUTES)$/ { $0 = $1 "=" ENVIRON[$1] } 1' \
+        "$SETTINGS" > "$SETTINGS.new" && mv "$SETTINGS.new" "$SETTINGS"
+    refresh
+}
+
 start() {
-    local preset=${1:-} spec="" p cpus mem args out id
+    local preset=${1:-} spec="" p cpus mem time=$TIME gpus=0 partition=$PARTITION sizes error args out id
     for p in $PRESETS; do [ "${p%%:*}" = "$preset" ] && spec=$p; done
-    [ -n "$spec" ] || die "unknown preset '$preset' (settings has: $PRESETS)"
-    IFS=: read -r _ cpus mem <<< "$spec"
+    if [ -n "$spec" ]; then
+        # name:cores:memory, then optionally :gpus
+        IFS=: read -r _ cpus mem gpus <<< "$spec"
+        gpus=${gpus:-0} time=$(gpu_time "${gpus:-0}" "$TIME")
+        set -- "$preset"
+    elif [ "$preset" = custom ]; then
+        # Asked before taking the lock below, which re-runs start with the sizes.
+        if [ $# = 1 ]; then
+            sizes=$(custom_form) || exit 0
+            set -- custom $sizes
+        fi
+        error=$(custom_error "${2:-}" "${3:-}" "${4:-}" "${5:-}")
+        [ -z "$error" ] || die "$error"
+        cpus=$2 mem=$3G time=$4 gpus=$5
+        set -- custom "$2" "$3" "$4" "$5"
+    else
+        die "unknown preset '$preset' (settings has: $PRESETS, or custom)"
+    fi
     # One start at a time, so two quick clicks don't pick the same slot.
-    one_at_a_time start start "$preset"
+    one_at_a_time start start "$@"
     # Show the start at once; submitting takes a few seconds. The note goes when start ends, but its
     # drawn line stays until the next redraw (wait_start's when the job runs, or the next refresh).
     # Only a failed start redraws at once.
@@ -440,9 +527,11 @@ start() {
     refresh
 
     logged_in || die "not logged in to GenomeDK, run: gimlet login"
-    args="--parsable --comment=$preset --account=$ACCOUNT --time=$TIME"
+    args="--parsable --comment=$preset --account=$ACCOUNT --time=$time"
     args="$args --cpus-per-task=$cpus --mem=$mem --output=/dev/null --export=ALL,IDLE_MINUTES=$IDLE_MINUTES"
-    [ -n "$PARTITION" ] && args="$args --partition=$PARTITION"
+    [ "$gpus" = 0 ] || partition=$GPU_PARTITION
+    [ -n "$partition" ] && args="$args --partition=$partition"
+    [ "$gpus" = 0 ] || args="$args --gpus=$gpus"
     # Picking the slot and submitting happen in one call: each ssh command costs seconds on a busy login node.
     out=$(submit_script | remote bash -s -- "$USERNAME" "'$args'" 2>&1) || die "could not start a job: $out"
     echo "Submitted $out"
@@ -574,7 +663,7 @@ list() {
 }
 
 case ${1:-} in
-    start) start "${2:-}" ;;
+    start) shift; start "$@" ;;
     stop) stop "${2:-}" "${3:-}" ;;
     stop-all) stop_all ;;
     open) open_vscode "${2:-}" "${3:-}" ;;
@@ -583,8 +672,9 @@ case ${1:-} in
     menu) menu ;;
     proxy) proxy "${2:-}" ;;
     ssh-config) write_ssh_config "" ;;
+    settings) settings_form ;;
     doctor) doctor ;;
     update) update ;;
     check-update) check_update ;;
-    *) sed -n '2,16s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
+    *) sed -n '2,18s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
 esac
