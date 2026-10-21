@@ -136,7 +136,9 @@ EOF
 logged_in() {
     local out
     ssh -F "$SSH_CONFIG" -O check gimlet-login 2>/dev/null && return 0
-    if out=$(ssh -n -F "$SSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 gimlet-login true 2>&1 > /dev/null); then
+    # Allow prompt-free keyboard-interactive auth, but refuse any actual prompts.
+    if out=$(SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$HERE/gimlet-askpass.sh" \
+        ssh -n -F "$SSH_CONFIG" -o BatchMode=no -o ConnectTimeout=5 -o ConnectionAttempts=1 gimlet-login true 2>&1 > /dev/null); then
         printf '%s reconnected\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" >> "$CONF_DIR/connection.log"
         return 0
     fi

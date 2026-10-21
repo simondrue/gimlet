@@ -23,6 +23,23 @@ case " $* " in
     *" -O check "*) exit "$GIMLET_TEST_CONNECTED" ;;
     *" -W "*) cat ;;
     *)
+        # The server requires keyboard-interactive even when it has no prompts.
+        case " $* " in
+            *" -o BatchMode=yes "*)
+                echo 'Permission denied (keyboard-interactive).' >&2
+                exit 255
+                ;;
+        esac
+        [ "$SSH_ASKPASS_REQUIRE" = force ] && [ "$SSH_ASKPASS" = "$GIMLET_TEST_ASKPASS" ] || {
+            echo 'recovery must refuse authentication prompts' >&2
+            exit 255
+        }
+        if [ "$GIMLET_TEST_RECOVER" = prompt ]; then
+            # OpenSSH can send an empty answer even when askpass fails.
+            "$SSH_ASKPASS" 'Verification code:'
+            echo 'unsafe: SSH continued after an authentication prompt'
+            exit 0
+        fi
         if [ "$GIMLET_TEST_RECOVER" = 0 ]; then
             cat > /dev/null
             echo 'login banner'
@@ -37,6 +54,7 @@ esac
     calls = root / "calls"
     log = root / "connection.log"
     setup = '''CONF_DIR=$1
+HERE=$2
 SELF=gimlet
 SSH_CONFIG="$CONF_DIR/ssh_config"
 SETTINGS="$CONF_DIR/settings"
@@ -50,11 +68,13 @@ red_menu() { printf '%s\\n' "$2"; }
     def run(command, connected=1, recover=0, error="Permission denied"):
         calls.write_text("")
         env = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"],
+                   SSH_ASKPASS="/usr/bin/true", SSH_ASKPASS_REQUIRE="never",
+                   GIMLET_TEST_ASKPASS=str(Path(__file__).with_name("gimlet-askpass.sh").resolve()),
                    GIMLET_TEST_CALLS=str(calls), GIMLET_TEST_CONNECTED=str(connected),
                    GIMLET_TEST_RECOVER=str(recover), GIMLET_TEST_ERROR=error)
         return subprocess.run(
             ["bash", "-u", "-o", "pipefail", "-c", setup + functions + "\n" + command,
-             "test", directory],
+             "test", directory, str(Path(__file__).resolve().parent)],
             input="SSH payload\n", text=True, capture_output=True, env=env, timeout=5,
         )
 
@@ -62,14 +82,20 @@ red_menu() { printf '%s\\n' "$2"; }
     assert result.returncode == 0 and not result.stdout and not result.stderr
     assert len(calls.read_text().splitlines()) == 1 and not log.exists()
 
-    result = run("logged_in && cat")
+    result = run('logged_in && test "$SSH_ASKPASS" = /usr/bin/true '
+                 '&& test "$SSH_ASKPASS_REQUIRE" = never && cat')
     assert result.returncode == 0, result.stderr
     assert result.stdout == "SSH payload\n" and not result.stderr
     assert len(calls.read_text().splitlines()) == 2
     assert "reconnected" in log.read_text()
     attempt = calls.read_text().splitlines()[1]
-    for option in ("-n", "BatchMode=yes", "ConnectTimeout=5", "ConnectionAttempts=1"):
+    for option in ("-n", "BatchMode=no", "ConnectTimeout=5", "ConnectionAttempts=1"):
         assert option in attempt, attempt
+
+    result = run("logged_in", recover="prompt")
+    assert result.returncode == 1 and not result.stdout and not result.stderr
+    assert len(calls.read_text().splitlines()) == 2
+    assert "reconnect failed: gimlet: authentication needs input" in log.read_text()
 
     for error in ("Permission denied", "Connection timed out"):
         result = run("logged_in", recover=1, error=error)

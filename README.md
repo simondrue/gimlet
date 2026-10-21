@@ -51,7 +51,7 @@ When the repo tracks a git remote, the menu checks it once a day and shows **Upd
 
 If something doesn't work, run `./gimlet doctor`. It checks each part of the setup (settings, ssh key, ssh config, VS Code and its Remote-SSH extension, SwiftBar, login, Slurm account) and says how to fix what is missing.
 
-If the shared SSH connection drops, the next menu refresh or VS Code reconnect tries one silent login (5-second connection timeout). If it fails, use **Log in to GenomeDK…** to enter 2FA if needed. Recovery attempts and SSH errors are recorded in `~/.config/gimlet/connection.log`. Existing VS Code connections still disconnect when the shared connection dies.
+If the shared SSH connection drops, the next menu refresh or VS Code reconnect tries one silent login (5-second connection timeout). Prompt-free keyboard-interactive authentication is allowed, but a real authentication prompt aborts recovery without submitting an empty answer. If it fails, use **Log in to GenomeDK…** to enter 2FA if needed. Recovery attempts and SSH errors are recorded in `~/.config/gimlet/connection.log`. Existing VS Code connections still disconnect when the shared connection dies.
 
 If the menu is slow to react to clicks: SwiftBar runs gimlet through your login shell, so a slow `~/.bash_profile` (e.g. `conda init`) delays every click. In SwiftBar's settings, set **Shell** to zsh.
 
@@ -62,6 +62,7 @@ If the icon stops updating until you open the menu, quit and reopen SwiftBar.
 | Piece | What it does |
 |---|---|
 | `gimlet` | All logic: menu output, start/stop, opening VS Code, and the ssh helper that finds a slot's node. |
+| `gimlet-askpass.sh` | Aborts automatic SSH recovery if authentication needs user input. |
 | `gimlet-form.js` | The Custom order and Settings forms. |
 | `gimlet-pill.js` | Draws the menu bar icon. |
 | `gimlet-job.sh` | The Slurm job. Every minute it checks for your ssh connections on its node; after `IDLE_MINUTES` without one, it exits. It reports connected/idle in a small file, `~/.gimlet/<jobid>` on GenomeDK, which the menu reads; the file is removed when the job ends. |
