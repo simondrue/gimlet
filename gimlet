@@ -7,6 +7,8 @@
 #   gimlet stop-all            cancel all your gimlet jobs
 #   gimlet open <host> [dir]   open VS Code on gimlet-N (an empty window if no dir is given)
 #   gimlet login               log in to GenomeDK (2FA) and keep the connection open
+#   gimlet mount               mount your GenomeDK home at ~/GenomeDK (needs sshfs)
+#   gimlet unmount             unmount ~/GenomeDK
 #   gimlet list                show your gimlet jobs
 #   gimlet menu                SwiftBar menu output
 #   gimlet proxy <host>        ssh ProxyCommand for gimlet-N (used by the generated ssh config)
@@ -28,6 +30,7 @@ LAST_SEEN="$CONF_DIR/state"   # "jobid state warned" per job, to notice changes 
 STARTING="$CONF_DIR/starting" # preset of a start in progress, shown in the menu until the job is submitted
 STOPPING="$CONF_DIR/stopping" # one file per job being stopped, shown in the menu until the stop is done
 JOBS="$CONF_DIR/jobs"         # the job list from the last menu refresh
+MOUNT="$HOME/GenomeDK"
 CODE=$(command -v code || echo "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code")
 
 GREEN="#34C759" ORANGE="#FF9500" GREY="#8E8E93" RED="#FF3B30"
@@ -129,8 +132,16 @@ EOF
     if cmp -s "$SSH_CONFIG.tmp" "$SSH_CONFIG"; then rm "$SSH_CONFIG.tmp"; else mv "$SSH_CONFIG.tmp" "$SSH_CONFIG"; fi
 }
 
+# Reuse the shared connection, or try one silent login. -n preserves proxy stdin.
 logged_in() {
-    ssh -F "$SSH_CONFIG" -O check gimlet-login 2>/dev/null
+    local out
+    ssh -F "$SSH_CONFIG" -O check gimlet-login 2>/dev/null && return 0
+    if out=$(ssh -n -F "$SSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 gimlet-login true 2>&1 > /dev/null); then
+        printf '%s reconnected\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" >> "$CONF_DIR/connection.log"
+        return 0
+    fi
+    printf '%s reconnect failed: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$out" >> "$CONF_DIR/connection.log"
+    return 1
 }
 
 # Runs a command on the login node over the shared connection. Never prompts.
@@ -280,7 +291,24 @@ red_menu() {
     echo "| $(pill "$1" $RED)"
     echo "---"
     echo "$2"
+    mount_line no
     footer
+}
+
+mounted() {
+    mount | grep -qF " on $MOUNT ("
+}
+
+# Unmount whenever mounted, even logged out (a dead mount can hang Finder). Mount only when logged in ($1 = yes).
+mount_line() {
+    if mounted; then
+        echo "---"
+        echo "Unmount GenomeDK | bash=\"$SELF\" param1=unmount terminal=false"
+    elif [ "$1" = yes ]; then
+        echo "---"
+        if command -v sshfs > /dev/null; then echo "Mount GenomeDK | bash=\"$SELF\" param1=mount terminal=false"
+        else echo "Mount GenomeDK (needs sshfs)"; fi
+    fi
 }
 
 # Ids of jobs being stopped. A mark older than a minute was left by a stop that died.
@@ -405,6 +433,7 @@ menu() {
         done
         echo "--Custom order… | bash=\"$SELF\" param1=start param2=custom terminal=false"
     fi
+    mount_line yes
     footer
 }
 
@@ -598,6 +627,26 @@ login() {
     refresh
 }
 
+# Over the shared login connection, so no 2FA. BatchMode makes sshfs's reconnect fail instead of waiting for a prompt.
+mount_home() {
+    local out
+    logged_in || die "not logged in to GenomeDK. Use 'Log in to GenomeDK' in the gimlet menu."
+    mounted || {
+        mkdir -p "$MOUNT"
+        out=$(sshfs -o ssh_command="ssh -F $SSH_CONFIG -o BatchMode=yes" "gimlet-login:/home/$USERNAME" "$MOUNT" \
+            -o idmap=none -o uid="$(id -u)",gid="$(id -g)" -o local,volname=GenomeDK -o umask=002 \
+            -o follow_symlinks -o reconnect -o cache=no 2>&1) || die "could not mount GenomeDK: $out"
+    }
+    open "$MOUNT"
+    refresh
+}
+
+unmount_home() {
+    local out
+    out=$(diskutil umount force "$MOUNT" 2>&1) || die "could not unmount GenomeDK: $out"
+    refresh
+}
+
 # ProxyCommand for gimlet-N: finds the node of that slot's running job and connects to it.
 proxy() {
     local host=${1:-} jobs node
@@ -668,6 +717,8 @@ case ${1:-} in
     stop-all) stop_all ;;
     open) open_vscode "${2:-}" "${3:-}" ;;
     login) login ;;
+    mount) mount_home ;;
+    unmount) unmount_home ;;
     list) list ;;
     menu) menu ;;
     proxy) proxy "${2:-}" ;;
@@ -676,5 +727,5 @@ case ${1:-} in
     doctor) doctor ;;
     update) update ;;
     check-update) check_update ;;
-    *) sed -n '2,18s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
+    *) sed -n '2,20s/^# \{0,1\}//p' "$SELF"; exit 1 ;;
 esac

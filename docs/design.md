@@ -42,6 +42,10 @@ gimlet-2 · ⏳ Waiting
 Stop all jobs? ▸  Yes, stop N jobs   (whenever there are jobs; the submenu is the confirmation)
 ───
 Start new job ▸  single / double / pitcher / shot / Custom order…   (greyed out while a job is waiting)
+───
+Mount GenomeDK            (logged in and not mounted; greyed "(needs sshfs)" without sshfs)
+Unmount GenomeDK          (when mounted, even logged out)
+───
 Settings…
 Refresh
 Update gimlet             (when the git remote has new commits; else "gimlet is up to date", click to check now)
@@ -98,7 +102,13 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 - That file holds a `Host gimlet-*` entry. A small helper (a ProxyCommand) looks up the slot's node through `squeue` when you connect and **refuses** if that slot has no running job.
 - VS Code's host list skips wildcard entries, so each menu refresh also writes an empty `Host gimlet-N` line per running job. The file is only rewritten when that list or the settings change.
 - One shared login connection (ControlMaster/ControlPersist) through the login node is used by the plugin's status checks and by all VS Code windows.
-- After a network change the shared connection dies and GenomeDK asks for 2FA again. The icon turns red, and **Log in to GenomeDK** opens Terminal so the code can be typed once. Status checks never prompt.
+- If the shared connection dies, the next connection check tries one silent login (5-second connection timeout). If it fails, the icon turns red, and **Log in to GenomeDK** opens Terminal so 2FA can be entered if needed. Status checks never prompt. Recovery successes and failures, including SSH errors, are timestamped in `~/.config/gimlet/connection.log`.
+
+## Mount
+
+- **Mount GenomeDK** runs sshfs for `/home/<username>` at `~/GenomeDK` through the shared login connection (no 2FA; `BatchMode` so `reconnect` fails instead of prompting), then opens it in Finder. Options: `idmap=none`, own uid/gid, `local`, `volname=GenomeDK`, `umask=002`, `follow_symlinks`, `reconnect`, `cache=no`.
+- **Unmount GenomeDK** runs `diskutil umount force`. Shown whenever mounted, since a mount left from a dead connection hangs.
+- Mount state is read from `mount` on each refresh. sshfs/macFUSE are not installed by `install.sh` (macFUSE needs approval in System Settings).
 
 ## Ruled out
 
@@ -112,4 +122,4 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settings�
 - The menu refreshes every 2 minutes (plugin file `gimlet.2m.sh`). Waiting for a new job to start asks Slurm nothing: `gimlet start` creates the job's status file empty right after `sbatch`, and a background ssh command reads it every 5 s (for up to an hour) until the job's first write, then redraws the menu. The file must exist beforehand: the login node sees a new file on the shared home up to ~45 s late, but a write into an existing file within a second when it is reopened (measured). No refresh on open (`swiftbar.refreshOnOpen`): SwiftBar waits for the plugin before showing the menu.
 - Starting a job shows `gimlet-N · ⏳ Waiting` (the slot it will get: the lowest free one in the last job list) within a second: `gimlet start` writes a local note and redraws, and that redraw reuses the last job list instead of asking GenomeDK. The line stays until the job runs (wait_start redraws) or the next refresh; only a failed start redraws at once. Menu items that run start or stop don't also carry `refresh=true`, since those commands redraw by themselves.
 - Notifications go through SwiftBar's `swiftbar://notify` URL, so they show SwiftBar's icon (`osascript display notification` shows Script Editor's). SwiftBar needs notification permission in System Settings.
-- Status checks first test the shared connection (`ssh -O check`) and never open a new login, so a logged-out menu doesn't cause repeated failed logins.
+- Connection checks first test the shared connection (`ssh -O check`), then try one noninteractive login if it is missing. The menu's normal 2-minute refresh provides later attempts; VS Code's proxy uses the same check. Reconnect uses `ssh -n` so it cannot consume proxied SSH traffic, and writes no output to that traffic.

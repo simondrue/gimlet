@@ -37,17 +37,21 @@ If you move the repo, run `install.sh` again. To remove gimlet, run `uninstall.s
 3. On the job (🍸 in use, 💤 unused, ⏳ waiting) → **Open VS Code**. A VS Code window opens on the node; use File → Open Folder to browse GenomeDK. Or in VS Code, pick `gimlet-1` from Remote-SSH's host list.
 4. Close your VS Code windows when done. The job ends by itself 60 minutes after the last VS Code window closes (change this with idle minutes in **Settings…**), or stop it from the menu. **Stop all jobs?** stops every job.
 
+**Mount GenomeDK** mounts your GenomeDK home at `~/GenomeDK` and opens it in Finder; **Unmount GenomeDK** removes it (also shown when logged out, to clear a dead mount). It uses the same login, so no extra 2FA. Needs sshfs and macFUSE (`brew install --cask macfuse` and `brew install gromgit/fuse/sshfs-mac`, then allow macFUSE in System Settings → Privacy & Security); without them the item is greyed out.
+
 Work still running on the node when the job ends (including tmux) is killed. Use `sbatch` for long runs.
 
 **Settings…** opens a form for username, account, login host, ssh key, time limit and idle minutes. Presets and partition are edited in `~/.config/gimlet/settings`: the form's **Edit presets in file…** opens it in a text editor.
 
-The same commands work in a terminal: `./gimlet list`, `./gimlet start single`, `./gimlet start custom 6 12 24:00:00 0`, `./gimlet open gimlet-1 /some/folder`, `./gimlet stop <jobid>`, `./gimlet stop-all`, `./gimlet settings`, `./gimlet doctor`.
+The same commands work in a terminal: `./gimlet list`, `./gimlet start single`, `./gimlet start custom 6 12 24:00:00 0`, `./gimlet open gimlet-1 /some/folder`, `./gimlet stop <jobid>`, `./gimlet stop-all`, `./gimlet mount`, `./gimlet unmount`, `./gimlet settings`, `./gimlet doctor`.
 
 When the repo tracks a git remote, the menu checks it once a day and shows **Update gimlet** when there are new commits. To check now, run `./gimlet check-update`.
 
 ## Troubleshooting
 
 If something doesn't work, run `./gimlet doctor`. It checks each part of the setup (settings, ssh key, ssh config, VS Code and its Remote-SSH extension, SwiftBar, login, Slurm account) and says how to fix what is missing.
+
+If the shared SSH connection drops, the next menu refresh or VS Code reconnect tries one silent login (5-second connection timeout). If it fails, use **Log in to GenomeDK…** to enter 2FA if needed. Recovery attempts and SSH errors are recorded in `~/.config/gimlet/connection.log`. Existing VS Code connections still disconnect when the shared connection dies.
 
 If the menu is slow to react to clicks: SwiftBar runs gimlet through your login shell, so a slow `~/.bash_profile` (e.g. `conda init`) delays every click. In SwiftBar's settings, set **Shell** to zsh.
 
