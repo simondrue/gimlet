@@ -106,6 +106,7 @@ Settings live in a plain config file (`~/.config/gimlet/settings`). **Settingsâ€
 
 ## Mount
 
+- A new mount requires an existing shared SSH login. If sshfs fails, gimlet checks that login again and retries once; it does not attempt a login to start or retry the mount.
 - **Mount GenomeDK** runs sshfs for `/home/<username>` at `~/GenomeDK` through the shared login connection (no 2FA; `BatchMode` so `reconnect` fails instead of prompting), then opens it in Finder. Options: `idmap=none`, own uid/gid, `local`, `volname=GenomeDK`, `umask=002`, `follow_symlinks`, `reconnect`, `cache=no`.
 - **Unmount GenomeDK** runs `diskutil umount force`. Shown whenever mounted, since a mount left from a dead connection hangs.
 - Mount state is read from `mount` on each refresh. sshfs/macFUSE are not installed by `install.sh` (macFUSE needs approval in System Settings).

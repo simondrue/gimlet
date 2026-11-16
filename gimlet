@@ -631,13 +631,17 @@ login() {
 
 # Over the shared login connection, so no 2FA. BatchMode makes sshfs's reconnect fail instead of waiting for a prompt.
 mount_home() {
-    local out
-    logged_in || die "not logged in to GenomeDK. Use 'Log in to GenomeDK' in the gimlet menu."
+    local out attempt
     mounted || {
-        mkdir -p "$MOUNT"
-        out=$(sshfs -o ssh_command="ssh -F $SSH_CONFIG -o BatchMode=yes" "gimlet-login:/home/$USERNAME" "$MOUNT" \
-            -o idmap=none -o uid="$(id -u)",gid="$(id -g)" -o local,volname=GenomeDK -o umask=002 \
-            -o follow_symlinks -o reconnect -o cache=no 2>&1) || die "could not mount GenomeDK: $out"
+        for attempt in 1 2; do
+            ssh -F "$SSH_CONFIG" -O check gimlet-login 2>/dev/null || \
+                die "not logged in to GenomeDK. Use 'Log in to GenomeDK' in the gimlet menu."
+            mkdir -p "$MOUNT"
+            if out=$(sshfs -o ssh_command="ssh -F $SSH_CONFIG -o BatchMode=yes" "gimlet-login:/home/$USERNAME" "$MOUNT" \
+                -o idmap=none -o uid="$(id -u)",gid="$(id -g)" -o local,volname=GenomeDK -o umask=002 \
+                -o follow_symlinks -o reconnect -o cache=no 2>&1); then break; fi
+            [ "$attempt" = 2 ] && die "could not mount GenomeDK: $out"
+        done
     }
     open "$MOUNT"
     refresh
